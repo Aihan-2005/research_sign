@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 from dataclasses import asdict
 from pathlib import Path
@@ -14,6 +13,29 @@ from .config import VideoTextConfig
 from .dataset import VideoTextDataset,VideoDiverseBatchSampler,collate_video_text,check_disjoint_splits
 from .model import VideoTextModel,mil_similarity_matrix
 from .losses import contrastive_loss,retrieval_diagnostic
+
+
+MODEL_KEYS = ('visual_backend', 'embedding_dim', 'model_dim',
+              'temporal_layers', 'temporal_heads', 'span_sizes', 'span_pooling')
+
+
+def architecture_config(cfg: VideoTextConfig) -> dict:
+    return {key: asdict(cfg)[key] for key in MODEL_KEYS}
+
+
+def checkpoint_architecture(raw: dict) -> dict:
+    result = dict(raw)
+    result.setdefault('span_pooling', 'mean')
+    return {key: result.get(key) for key in MODEL_KEYS}
+
+
+def verify_checkpoint_text_source(stored_cfg: dict, cfg: VideoTextConfig) -> None:
+
+    for key in ("text_backend", "text_model", "text_instruction",
+                "require_text_cache_metadata", "pair_source"):
+        default = False if key == "require_text_cache_metadata" else ("raw" if key == "pair_source" else "")
+        if stored_cfg.get(key, default) != getattr(cfg, key):
+            raise ValueError(f"Checkpoint text/source provenance differs: {key}")
 
 
 def seed_all(seed:int):
@@ -32,7 +54,7 @@ def dims(dataset:VideoTextDataset):
 
 
 def _selection(dataset:VideoTextDataset, limit:int,seed:int):
-
+    """Deterministic, diverse subset across videos for comparable val retrieval."""
     rng=np.random.default_rng(seed)
     ids={}
     for i,r in enumerate(dataset.refs):ids.setdefault(r.video_id,[]).append(i)
@@ -50,8 +72,11 @@ def _selection(dataset:VideoTextDataset, limit:int,seed:int):
 
 @torch.no_grad()
 def evaluate(model:VideoTextModel,dataset:VideoTextDataset,cfg:VideoTextConfig,device):
+    """Cross-video retrieval on one fixed set of held-out queries.
 
-
+    Scores use only video features + BGE-M3 text vectors. Reports retrieval,
+    not subtitle IoU or video-to-text generation quality.
+    """
     model.eval()
     ids=_selection(dataset,cfg.val_max_samples,cfg.seed)
     loader=DataLoader(Subset(dataset,ids),batch_size=max(1,min(cfg.batch_size,4)),
@@ -67,7 +92,7 @@ def evaluate(model:VideoTextModel,dataset:VideoTextDataset,cfg:VideoTextConfig,d
         text_keys.extend(batch["text_key"])
     if not texts:raise ValueError("Empty validation set")
     vectors=torch.cat(texts).to(device)
-
+    # Across-val matrix computed in small blocks to bound GPU memory.
     result=[]
     for q in range(0,len(spans),16):
         query=vectors[q:q+16]
@@ -79,7 +104,7 @@ def evaluate(model:VideoTextModel,dataset:VideoTextDataset,cfg:VideoTextConfig,d
                 len(group),maxlen,dtype=torch.bool,device=device)
             for j,item in enumerate(group):
                 n=len(item);bag[j,:n]=item.to(device);mask[j,:n]=True
-
+            # Each block: [num_text_queries, num_video_bags]
             tau=cfg.mil_temperature
             sim=torch.einsum('qd,bsd->qbs',query.float(),bag.float())
             sim=sim.masked_fill(~mask[None,:,:],-1e4)
@@ -125,9 +150,9 @@ def run_training(cfg:VideoTextConfig,resume:str|None=None):
         state=torch.load(resume,map_location=device,weights_only=True)
         if state.get('dims')!=list(model_dims):
             raise ValueError("Resume checkpoint feature dimensions differ from caches")
-        if state.get('model_cfg')!={k:asdict(cfg)[k] for k in
-                                  ('visual_backend','embedding_dim','model_dim','temporal_layers','temporal_heads','span_sizes')}:
+        if checkpoint_architecture(state.get('model_cfg', {})) != architecture_config(cfg):
             raise ValueError("Resume checkpoint model architecture mismatch")
+        verify_checkpoint_text_source(state.get('config', {}), cfg)
         model.load_state_dict(state['model']);optim.load_state_dict(state['optimizer'])
         start_epoch=int(state['epoch']);global_step=int(state['step'])
         best_r1=float(state['best_r1'])
@@ -173,7 +198,7 @@ def run_training(cfg:VideoTextConfig,resume:str|None=None):
         with logfile.open('a',encoding='utf-8') as fh:
             fh.write(json.dumps(row,ensure_ascii=False)+'\n')
         print(f"[video_text] {json.dumps(row,ensure_ascii=False)}")
-
+        # Checkpoint tracks held-out cross-video retrieval; null metric -> fail clearly.
         if metric is None:
             raise ValueError('Validation has no reliable cross-video distractors')
         if metric>best_r1:
@@ -182,8 +207,7 @@ def run_training(cfg:VideoTextConfig,resume:str|None=None):
                 'model':model.state_dict(),'optimizer':optim.state_dict(),
                 'epoch':epoch+1,'step':global_step,'best_r1':best_r1,
                 'dims':list(model_dims),
-                'model_cfg':{k:asdict(cfg)[k] for k in
-                    ('visual_backend','embedding_dim','model_dim','temporal_layers','temporal_heads','span_sizes')},
+                'model_cfg':architecture_config(cfg),
                 'config':asdict(cfg), 'val':valstats,
             },checkpoint)
             print(f"[checkpoint] {checkpoint}")
@@ -197,8 +221,9 @@ def evaluate_checkpoint(cfg:VideoTextConfig,checkpoint_path:str|Path):
     device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     ckpt=torch.load(checkpoint_path,map_location=device,weights_only=True)
     stored=ckpt['config'];now=asdict(cfg)
-    for k in ('visual_backend','embedding_dim','model_dim','temporal_layers','temporal_heads','span_sizes'):
-        if stored[k]!=now[k]:
+    verify_checkpoint_text_source(stored, cfg)
+    for k in MODEL_KEYS:
+        if stored.get(k, 'mean' if k == 'span_pooling' else None)!=now[k]:
             raise ValueError(f"Model architecture differs on key {k}")
     model=VideoTextModel(cfg,*ckpt['dims']).to(device)
     model.load_state_dict(ckpt['model'])

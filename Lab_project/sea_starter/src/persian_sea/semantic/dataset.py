@@ -12,7 +12,7 @@ from persian_sea.config import AppConfig, read_video_ids
 from persian_sea.features.cache import FeatureCache
 from persian_sea.io.subtitles import SubtitleCue, find_subtitle, pair_corrected_cues, read_subtitles
 from persian_sea.semantic.candidates import select_candidate_indices
-from persian_sea.text.cache import TextFeatureCache
+from persian_sea.text.cache import TextFeatureCache, text_cache_directory, verify_text_cache
 
 
 @dataclass(frozen=True)
@@ -49,22 +49,28 @@ class _VideoCacheLRU:
 
 
 class SubtitleAlignmentDataset(Dataset):
- 
+    """Weakly aligned continuous-video cues; GT only if manually verified.
+
+    A cue's approximate start/end are used only for candidate retrieval and
+    temporal priors. Place ONLY independently verified timings in subtitles_gt.
+    """
     def __init__(self, cfg: AppConfig, video_ids_path: Path,
-                 memory_cache_videos: int = 2):
+                 memory_cache_videos: int = 2, include_gt: bool = True):
         self.cfg = cfg
         self.refs: list[SampleRef] = []
         self.cache = _VideoCacheLRU(memory_cache_videos)
+        self.include_gt = include_gt
 
         for video_id in read_video_ids(video_ids_path):
             raw_path = find_subtitle(cfg.paths.subtitles_raw, video_id)
             visual_path = cfg.paths.feature_cache / f"{video_id}.npz"
-            text_path = cfg.paths.text_feature_cache / f"{video_id}.npz"
+            text_path = text_cache_directory(cfg) / f"{video_id}.npz"
             if raw_path is None or not visual_path.exists() or not text_path.exists():
                 print(f"[dataset] skip {video_id}: subtitle or cache missing")
                 continue
             raw = read_subtitles(raw_path)
-            gt_path = find_subtitle(cfg.paths.subtitles_gt, video_id)
+            verify_text_cache(text_path, cfg, video_id)
+            gt_path = find_subtitle(cfg.paths.subtitles_gt, video_id) if self.include_gt else None
             corrected = read_subtitles(gt_path) if gt_path is not None else None
             paired_gt = pair_corrected_cues(raw, corrected)
             text = self.cache.text(text_path, video_id)
@@ -93,7 +99,7 @@ class SubtitleAlignmentDataset(Dataset):
             cfg.paths.feature_cache / f"{ref.video_id}.npz", ref.video_id,
         )
         text = self.cache.text(
-            cfg.paths.text_feature_cache / f"{ref.video_id}.npz", ref.video_id,
+            text_cache_directory(cfg) / f"{ref.video_id}.npz", ref.video_id,
         )
         candidate_idx = select_candidate_indices(
             visual.starts, visual.ends,
@@ -154,3 +160,4 @@ def collate_alignment_batch(batch: list[dict]) -> dict:
         "segment_ends": ends,
         "global_segment_indices": global_indices,
     }
+

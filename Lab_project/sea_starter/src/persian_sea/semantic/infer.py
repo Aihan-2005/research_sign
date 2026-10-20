@@ -20,7 +20,6 @@ from persian_sea.semantic.train import move_batch, resolve_device
 
 def load_model(cfg: AppConfig, checkpoint_path: Path):
     device = resolve_device(cfg.training.device)
-
     payload = torch.load(checkpoint_path, map_location=device, weights_only=True)
     model = SemanticAligner(
         text_input_dim=int(payload["text_dim"]),
@@ -62,11 +61,10 @@ def align_video(video_id: str, cfg: AppConfig,
     """Infer all cues from a continuous video jointly, without subtitle cropping."""
     model, device = load_model(cfg, checkpoint_path)
 
-
     with tempfile.TemporaryDirectory(prefix="persian_sea_") as tmp:
         ids_path = Path(tmp) / "video_ids.txt"
         ids_path.write_text(video_id + "\n", encoding="utf-8")
-        dataset = SubtitleAlignmentDataset(cfg, ids_path)
+        dataset = SubtitleAlignmentDataset(cfg, ids_path, include_gt=False)
         if any(ref.video_id != video_id for ref in dataset.refs):
             raise RuntimeError("Unexpected sample video in inference")
         loader = DataLoader(
@@ -141,3 +139,4 @@ def align_video(video_id: str, cfg: AppConfig,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[semantic-align] {video_id} -> {out_path}")
     return out_path
+

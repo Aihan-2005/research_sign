@@ -14,7 +14,7 @@ from persian_sea.config import AppConfig
 from persian_sea.semantic.dataset import SubtitleAlignmentDataset, collate_alignment_batch
 from persian_sea.semantic.losses import contrastive_bag_loss, supervised_span_loss
 from persian_sea.semantic.model import SemanticAligner
-from persian_sea.text.cache import TextFeatureCache
+from persian_sea.text.cache import TextFeatureCache, text_cache_directory, verify_text_cache
 from persian_sea.features.cache import FeatureCache
 
 
@@ -35,9 +35,10 @@ def infer_dimensions(cfg: AppConfig, video_ids_path: Path) -> tuple[int, int, in
     ids = [x.strip() for x in video_ids_path.read_text(encoding="utf-8").splitlines() if x.strip()]
     for video_id in ids:
         visual_path = cfg.paths.feature_cache / f"{video_id}.npz"
-        text_path = cfg.paths.text_feature_cache / f"{video_id}.npz"
+        text_path = text_cache_directory(cfg) / f"{video_id}.npz"
         if visual_path.exists() and text_path.exists():
             visual = FeatureCache(visual_path)
+            verify_text_cache(text_path, cfg, video_id)
             text = TextFeatureCache(text_path)
             return (
                 int(text.embeddings.shape[-1]),
@@ -135,6 +136,7 @@ def train_semantic(cfg: AppConfig) -> Path:
     model = SemanticAligner(
         text_input_dim=text_dim, rgb_input_dim=rgb_dim,
         num_views=num_views, embedding_dim=cfg.semantic.embedding_dim,
+        visual_backend=cfg.semantic.visual_backend,
     ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=cfg.training.learning_rate,
@@ -192,3 +194,4 @@ def train_semantic(cfg: AppConfig) -> Path:
         json.dumps(history, indent=2, ensure_ascii=False), encoding="utf-8",
     )
     return checkpoint
+

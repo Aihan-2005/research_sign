@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from .config import VideoTextConfig
+from .span_pooling import SpanPooler
 
 
 class VideoTower(nn.Module):
@@ -66,8 +67,10 @@ class TextTower(nn.Module):
 
 
 def multi_scale_spans(tokens,mask,sizes:tuple[int,...]):
+    """Pool consecutive 1/2/4/8 sign segments, invalidating windows with padding.
 
-  
+    B,M,D -> B,S,D + B,S where S=sum(M-k+1 for k<=M).
+    """
     B,M,D=tokens.shape
     sums=torch.cat((tokens.new_zeros((B,1,D)),tokens.cumsum(dim=1)),dim=1)
     counts=torch.cat((tokens.new_zeros((B,1,1)),mask.to(tokens.dtype).cumsum(dim=1)[...,None]),dim=1)
@@ -91,7 +94,7 @@ class VideoTextModel(nn.Module):
                  visual:nn.Module|None=None):
         super().__init__()
         if visual is None:
-
+            # Existing modular model registry stays the single source of truth.
             from persian_sea.model.builders import build_visual_encoder
             visual=build_visual_encoder(cfg.visual_backend,pose_input_dim=4,
                  rgb_input_dim=rgb_dim,num_views=num_views,
@@ -100,26 +103,28 @@ class VideoTextModel(nn.Module):
                               cfg.temporal_heads,cfg.visual_microbatch)
         self.text=TextTower(text_dim,cfg.embedding_dim)
         self.span_sizes=cfg.span_sizes
+        self.span_pooler = SpanPooler(cfg.embedding_dim, cfg.span_sizes,
+                                      backend=cfg.span_pooling)
         self.mil_temperature=cfg.mil_temperature
 
     def encode_video(self,batch:dict):
-
+        """Public transfer interface for future translation models: [B,M,D]."""
         return self.video(batch["pose"],batch["rgb"],batch["starts"],
                           batch["ends"],batch["mask"])
 
     def forward(self,batch:dict):
         tokens=self.encode_video(batch)
-        spans,span_mask=multi_scale_spans(tokens,batch["mask"],self.span_sizes)
+        spans,span_mask=self.span_pooler(tokens,batch["mask"])
         text=self.text(batch["text_embedding"])
         return {"video_tokens":tokens,"span_vectors":spans,
                 "span_mask":span_mask,"text_vectors":text}
 
 
 def mil_similarity_matrix(text_vectors,span_vectors,span_mask,temperature:float):
-
+    """Text i to video-bag j, BxB; normalized for different bag lengths."""
     temp=max(float(temperature),1e-4)
     sims=torch.einsum("id,jsd->ijs",text_vectors.float(),span_vectors.float())
     sims=sims.masked_fill(~span_mask[None,:,:],-1e4)
-
+    # Normalise by number of valid windows, avoiding the bag-size shortcut.
     count=span_mask.sum(dim=1).clamp_min(1).float().log()
     return temp*torch.logsumexp(sims/temp,dim=2)-temp*count[None,:]
