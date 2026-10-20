@@ -1,0 +1,3 @@
+[console_scripts]
+persian-sea-align = persian_sea.cli.align:main
+persian-sea-segment = persian_sea.cli.segment:main

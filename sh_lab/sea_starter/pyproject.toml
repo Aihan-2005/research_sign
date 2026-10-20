@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "persian-sea"
-version = "0.4.0"
-description = "Persian/Iranian Sign Language semantic subtitle alignment with Pose+RGB and BGE-M3"
+version = "0.4.1"
+description = "Persian sign-language subtitle alignment with continuous video, Pose+RGB and BGE-M3"
 requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.26,<2.0",
@@ -31,8 +31,8 @@ persian-sea-eval-segments = "persian_sea.cli.eval_segments:main"
 persian-sea-tune-segments = "persian_sea.cli.tune_segments:main"
 persian-sea-scan-rgbpose = "persian_sea.cli.scan_rgbpose:main"
 persian-sea-inspect-cache = "persian_sea.cli.inspect_cache:main"
-
-# Phase 4
+persian-sea-align = "persian_sea.cli.align:main"
+persian-sea-audit-data = "persian_sea.cli.audit_data:main"
 persian-sea-scan-text = "persian_sea.cli.scan_text:main"
 persian-sea-train-semantic = "persian_sea.cli.train_semantic:main"
 persian-sea-align-semantic = "persian_sea.cli.align_semantic:main"

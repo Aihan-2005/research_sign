@@ -1,3 +1,4 @@
+from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List
@@ -11,16 +12,13 @@ class PathsConfig:
     subtitles_raw: Path
     subtitles_gt: Path
     segmentation_gt: Path
-
     video_ids: Path
     train_video_ids: Path
     val_video_ids: Path
     test_video_ids: Path
-
     segmentation_output: Path
     alignment_output: Path
     reports: Path
-
     feature_cache: Path
     text_feature_cache: Path
     checkpoints: Path
@@ -84,32 +82,32 @@ class ScannerConfig:
 @dataclass(frozen=True)
 class SemanticConfig:
     text_model: str = "BAAI/bge-m3"
+    text_backend: str = "bge_m3"  # alternatives: qwen3_embedding
+    text_cache_layout: str = "legacy"  # legacy | by_backend
+    text_instruction: str = ""  # optional Qwen query instruction
+    text_revision: str = "main"  # pin a commit SHA for reproducibility
     text_device: str = "auto"
     text_amp: bool = True
     text_batch_size: int = 16
     text_max_length: int = 256
     text_cache_dtype: str = "float16"
     overwrite_text_cache: bool = False
-
     embedding_dim: int = 512
-
+    visual_backend: str = "pose_rgb"  # alternatives: pose_only
     search_radius_seconds: float = 6.0
     min_candidate_segments: int = 8
     max_candidate_segments: int = 48
-
     max_span_segments: int = 16
     max_span_seconds: float = 14.0
-
     align_temperature: float = 0.07
     temporal_prior_weight: float = 0.35
     temporal_sigma_seconds: float = 3.0
     duration_prior_weight: float = 0.25
-
     mil_temperature: float = 0.10
     contrastive_temperature: float = 0.07
     supervised_iou_temperature: float = 0.10
-
     global_top_k: int = 8
+    global_decoder: str = "monotonic_dp"
     overlap_penalty: float = 2.0
     gap_change_penalty: float = 0.15
 
@@ -122,14 +120,11 @@ class TrainingConfig:
     batch_size: int = 8
     num_workers: int = 0
     epochs: int = 20
-
     learning_rate: float = 2e-4
     weight_decay: float = 1e-2
     grad_clip_norm: float = 1.0
-
     contrastive_weight: float = 1.0
     supervised_weight: float = 1.0
-
     save_name: str = "semantic_aligner.pt"
 
 
@@ -146,6 +141,11 @@ class AlignmentConfig:
     similarity_weight: float = 0.0
     write_updated_eaf: bool = True
     overwrite: bool = False
+    # New pluggable, conservative baseline controls (old configs supported).
+    backend: str = "sea_temporal"  # alternative: original
+    sign_eaf_dir: str | None = None  # optional externally supplied ELAN SIGN tier
+    max_boundary_shift_seconds: float = 1.5
+    auto_apply_small_shifts: bool = False
 
 
 @dataclass(frozen=True)
@@ -168,12 +168,13 @@ def _pathify(raw: dict) -> PathsConfig:
 def load_config(path: str | Path) -> AppConfig:
     with Path(path).open("r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
-
+    if not isinstance(raw, dict):
+        raise ValueError("Config YAML must be a mapping")
     return AppConfig(
         paths=_pathify(raw["paths"]),
         pose=PoseConfig(**raw.get("pose", {})),
         elan=ElanConfig(**raw["elan"]),
-        segmentation=SegmentationConfig(**raw["segmentation"]),
+        segmentation=SegmentationConfig(**raw.get("segmentation", {})),
         segmentation_eval=SegmentationEvalConfig(**raw["segmentation_eval"]),
         scanner=ScannerConfig(**raw.get("scanner", {})),
         semantic=SemanticConfig(**raw.get("semantic", {})),
@@ -185,11 +186,8 @@ def load_config(path: str | Path) -> AppConfig:
 def read_video_ids(path: Path) -> list[str]:
     if not path.exists():
         raise FileNotFoundError(path)
-    return [
-        line.strip()
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+    return [x.strip() for x in path.read_text(encoding="utf-8").splitlines()
+            if x.strip() and not x.lstrip().startswith("#")]
 
 
 def model_tag(model: str) -> str:
@@ -204,7 +202,5 @@ def segmentation_run_name(model: str, b: int, o: int) -> str:
 def segmentation_subdir(cfg: AppConfig) -> Path:
     s = cfg.segmentation
     return cfg.paths.segmentation_output / segmentation_run_name(
-        s.model,
-        s.sign_b_threshold,
-        s.sign_o_threshold,
-    )
+        s.model, s.sign_b_threshold, s.sign_o_threshold)
+

@@ -1,0 +1,7 @@
+numpy<2.0,>=1.26
+PyYAML>=6.0
+webvtt-py>=0.4.6
+pysrt>=1.1.2
+
+[dev]
+pytest>=8

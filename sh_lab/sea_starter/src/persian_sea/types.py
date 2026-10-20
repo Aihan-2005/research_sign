@@ -20,3 +20,12 @@ class SignSegment:
             raise ValueError(f"Negative start: {self.start}")
         if self.end <= self.start:
             raise ValueError(f"Invalid segment: {self.start} -> {self.end}")
+
+
+@dataclass(frozen=True)
+class Alignment:
+    cue_index: int
+    start: float
+    end: float
+    first_sign_index: int
+    last_sign_index: int

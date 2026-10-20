@@ -3,9 +3,10 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from persian_sea.models.pose_encoder import PoseSemanticEncoder
-from persian_sea.models.rgb_encoder import CachedRGBEncoder
-from persian_sea.models.fusion import GatedPoseRGBFusion
+
+from persian_sea.model.pose_encoder import PoseSemanticEncoder
+from persian_sea.model.rgb_encoder import CachedRGBEncoder
+from persian_sea.model.fusion import GatedPoseRGBFusion
 
 
 class PoseRGBVisualEncoder(nn.Module):
@@ -19,8 +20,7 @@ class PoseRGBVisualEncoder(nn.Module):
     ):
         super().__init__()
         self.pose = PoseSemanticEncoder(
-            input_dim=pose_input_dim,
-            model_dim=model_dim,
+            input_dim=pose_input_dim, model_dim=model_dim,
         )
         self.rgb = CachedRGBEncoder(
             input_dim=rgb_input_dim,
