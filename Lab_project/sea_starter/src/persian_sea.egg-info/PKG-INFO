@@ -11,7 +11,8 @@ Requires-Dist: pose-format>=0.9.0
 Requires-Dist: torch>=2.2
 Requires-Dist: transformers>=4.56
 Requires-Dist: Pillow>=10
-Requires-Dist: decord>=0.6.0
+Requires-Dist: decord>=0.6.0; sys_platform != "darwin"
+Requires-Dist: eva-decord==0.6.1; sys_platform == "darwin"
 Requires-Dist: tqdm>=4.66
 Provides-Extra: dev
 Requires-Dist: pytest>=8; extra == "dev"
