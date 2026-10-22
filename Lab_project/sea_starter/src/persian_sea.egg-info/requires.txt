@@ -2,6 +2,12 @@ numpy<2.0,>=1.26
 PyYAML>=6.0
 webvtt-py>=0.4.6
 pysrt>=1.1.2
+pose-format>=0.9.0
+torch>=2.2
+transformers>=4.56
+Pillow>=10
+decord>=0.6.0
+tqdm>=4.66
 
 [dev]
 pytest>=8

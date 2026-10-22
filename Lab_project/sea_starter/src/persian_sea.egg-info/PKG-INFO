@@ -1,11 +1,17 @@
 Metadata-Version: 2.4
 Name: persian-sea
-Version: 0.1.0
-Summary: Configurable SEA-style baseline for Persian/Iranian Sign Language alignment
+Version: 0.5.0
+Summary: Persian sign-language alignment and modular video-text representation learning
 Requires-Python: >=3.10
 Requires-Dist: numpy<2.0,>=1.26
 Requires-Dist: PyYAML>=6.0
 Requires-Dist: webvtt-py>=0.4.6
 Requires-Dist: pysrt>=1.1.2
+Requires-Dist: pose-format>=0.9.0
+Requires-Dist: torch>=2.2
+Requires-Dist: transformers>=4.56
+Requires-Dist: Pillow>=10
+Requires-Dist: decord>=0.6.0
+Requires-Dist: tqdm>=4.66
 Provides-Extra: dev
 Requires-Dist: pytest>=8; extra == "dev"

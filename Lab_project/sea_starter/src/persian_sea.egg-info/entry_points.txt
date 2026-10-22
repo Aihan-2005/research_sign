@@ -1,3 +1,22 @@
 [console_scripts]
 persian-sea-align = persian_sea.cli.align:main
+persian-sea-align-semantic = persian_sea.cli.align_semantic:main
+persian-sea-audit-data = persian_sea.cli.audit_data:main
+persian-sea-audit-signers = persian_sea.cli.audit_signers:main
+persian-sea-eval-alignment-suite = persian_sea.cli.eval_alignment_suite:main
+persian-sea-eval-segments = persian_sea.cli.eval_segments:main
+persian-sea-eval-semantic = persian_sea.cli.eval_semantic:main
+persian-sea-eval-video-text = persian_sea.cli.eval_video_text:main
+persian-sea-inspect-cache = persian_sea.cli.inspect_cache:main
+persian-sea-oracle-coverage = persian_sea.cli.oracle_coverage:main
+persian-sea-pose = persian_sea.cli.pose:main
+persian-sea-preflight = persian_sea.cli.preflight:main
+persian-sea-prepare-manifest = persian_sea.cli.prepare_manifest:main
+persian-sea-preprocess = persian_sea.cli.preprocess:main
+persian-sea-scan-rgbpose = persian_sea.cli.scan_rgbpose:main
+persian-sea-scan-text = persian_sea.cli.scan_text:main
 persian-sea-segment = persian_sea.cli.segment:main
+persian-sea-train-semantic = persian_sea.cli.train_semantic:main
+persian-sea-train-video-text = persian_sea.cli.train_video_text:main
+persian-sea-tune-segments = persian_sea.cli.tune_segments:main
+persian-sea-validate-segments = persian_sea.cli.validate_segments:main
