@@ -4,20 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "persian-sea"
-version = "0.4.1"
-description = "Persian sign-language subtitle alignment with continuous video, Pose+RGB and BGE-M3"
+version = "0.5.0"
+description = "Persian sign-language alignment and modular video-text representation learning"
 requires-python = ">=3.10"
 dependencies = [
-  "numpy>=1.26,<2.0",
-  "PyYAML>=6.0",
-  "webvtt-py>=0.4.6",
-  "pysrt>=1.1.2",
-  "pose-format>=0.9.0",
-  "torch>=2.2",
-  "transformers>=4.56",
-  "Pillow>=10",
-  "decord>=0.6.0",
-  "tqdm>=4.66"
+  "numpy>=1.26,<2.0", "PyYAML>=6.0", "webvtt-py>=0.4.6", "pysrt>=1.1.2",
+  "pose-format>=0.9.0", "torch>=2.2", "transformers>=4.56",
+  "Pillow>=10", "decord>=0.6.0", "tqdm>=4.66"
 ]
 
 [project.optional-dependencies]
@@ -37,6 +30,16 @@ persian-sea-scan-text = "persian_sea.cli.scan_text:main"
 persian-sea-train-semantic = "persian_sea.cli.train_semantic:main"
 persian-sea-align-semantic = "persian_sea.cli.align_semantic:main"
 persian-sea-eval-semantic = "persian_sea.cli.eval_semantic:main"
+persian-sea-train-video-text = "persian_sea.cli.train_video_text:main"
+persian-sea-eval-video-text = "persian_sea.cli.eval_video_text:main"
+persian-sea-audit-signers = "persian_sea.cli.audit_signers:main"
+persian-sea-prepare-manifest = "persian_sea.cli.prepare_manifest:main"
+persian-sea-preflight = "persian_sea.cli.preflight:main"
+persian-sea-preprocess = "persian_sea.cli.preprocess:main"
+
+# Stage 5 scientific diagnostics on independently verified ground truth
+persian-sea-oracle-coverage = "persian_sea.cli.oracle_coverage:main"
+persian-sea-eval-alignment-suite = "persian_sea.cli.eval_alignment_suite:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -54,7 +54,6 @@ def dims(dataset:VideoTextDataset):
 
 
 def _selection(dataset:VideoTextDataset, limit:int,seed:int):
-    """Deterministic, diverse subset across videos for comparable val retrieval."""
     rng=np.random.default_rng(seed)
     ids={}
     for i,r in enumerate(dataset.refs):ids.setdefault(r.video_id,[]).append(i)
@@ -72,11 +71,8 @@ def _selection(dataset:VideoTextDataset, limit:int,seed:int):
 
 @torch.no_grad()
 def evaluate(model:VideoTextModel,dataset:VideoTextDataset,cfg:VideoTextConfig,device):
-    """Cross-video retrieval on one fixed set of held-out queries.
 
-    Scores use only video features + BGE-M3 text vectors. Reports retrieval,
-    not subtitle IoU or video-to-text generation quality.
-    """
+
     model.eval()
     ids=_selection(dataset,cfg.val_max_samples,cfg.seed)
     loader=DataLoader(Subset(dataset,ids),batch_size=max(1,min(cfg.batch_size,4)),
@@ -92,7 +88,7 @@ def evaluate(model:VideoTextModel,dataset:VideoTextDataset,cfg:VideoTextConfig,d
         text_keys.extend(batch["text_key"])
     if not texts:raise ValueError("Empty validation set")
     vectors=torch.cat(texts).to(device)
-    # Across-val matrix computed in small blocks to bound GPU memory.
+
     result=[]
     for q in range(0,len(spans),16):
         query=vectors[q:q+16]
@@ -104,7 +100,7 @@ def evaluate(model:VideoTextModel,dataset:VideoTextDataset,cfg:VideoTextConfig,d
                 len(group),maxlen,dtype=torch.bool,device=device)
             for j,item in enumerate(group):
                 n=len(item);bag[j,:n]=item.to(device);mask[j,:n]=True
-            # Each block: [num_text_queries, num_video_bags]
+
             tau=cfg.mil_temperature
             sim=torch.einsum('qd,bsd->qbs',query.float(),bag.float())
             sim=sim.masked_fill(~mask[None,:,:],-1e4)
@@ -198,7 +194,6 @@ def run_training(cfg:VideoTextConfig,resume:str|None=None):
         with logfile.open('a',encoding='utf-8') as fh:
             fh.write(json.dumps(row,ensure_ascii=False)+'\n')
         print(f"[video_text] {json.dumps(row,ensure_ascii=False)}")
-        # Checkpoint tracks held-out cross-video retrieval; null metric -> fail clearly.
         if metric is None:
             raise ValueError('Validation has no reliable cross-video distractors')
         if metric>best_r1:

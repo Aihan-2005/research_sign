@@ -5,6 +5,7 @@ from pathlib import Path
 from persian_sea.config import load_config, read_video_ids
 from persian_sea.features.preflight import inspect_input
 from persian_sea.features.cache_audit import inspect_cache_pair
+from persian_sea.text.cache import text_cache_directory, verify_text_cache
 
 
 def main():
@@ -28,12 +29,23 @@ def main():
                 item["pose_sync"] = inspect_pose_timing(cfg.paths.poses / f"{vid}.pose", Path(item["video"]))
         if args.check_caches:
             item["cache"] = inspect_cache_pair(vid, cfg.paths.feature_cache,
-                                                 cfg.paths.text_feature_cache,
+                                                 text_cache_directory(cfg),
                                                  cfg.paths.subtitles_raw,
                                                  expected_rgb_model=cfg.scanner.rgb_model,
                                                  expected_text_model=cfg.semantic.text_model,
                                                  expected_samples=cfg.scanner.samples_per_segment,
                                                  expected_views=cfg.scanner.resolved_views())
+
+        
+            cache_path = text_cache_directory(cfg) / f"{vid}.npz"
+            if cache_path.exists():
+                try:
+                    verify_text_cache(cache_path, cfg, vid)
+                except (ValueError, FileNotFoundError, OSError, KeyError) as exc:
+                    item["cache"]["findings"].append({
+                        "severity": "error", "code": "text_cache_provenance",
+                        "message": str(exc),
+                    })
         reports.append(item)
     n_errors = sum(1 for row in reports for f in row["findings"] if f["severity"] == "error")
     n_errors += sum(1 for row in reports for f in row.get("cache", {}).get("findings", []) if f["severity"] == "error")

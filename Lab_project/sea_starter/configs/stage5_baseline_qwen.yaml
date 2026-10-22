@@ -1,0 +1,119 @@
+paths:
+  videos: data/videos
+  poses: data/poses
+  subtitles_raw: data/subtitles_raw
+  subtitles_gt: data/subtitles_gt
+  segmentation_gt: data/segmentation_gt
+  video_ids: data/video_ids.txt
+  train_video_ids: data/train_ids.txt
+  val_video_ids: data/val_ids.txt
+  test_video_ids: data/test_ids.txt
+  segmentation_output: outputs/segmentation
+  alignment_output: outputs/aligned_subtitles
+  reports: outputs/reports
+  feature_cache: outputs/features
+  text_feature_cache: outputs/text_features
+  checkpoints: outputs/checkpoints
+
+pose:
+  format: mediapipe
+  model_complexity: 2
+  smooth_landmarks: false
+  refine_face_landmarks: true
+  overwrite: false
+
+elan:
+  sign_tiers: [SIGN, GLOSS, ZEI_GLOSS]
+  gt_sign_tiers: [SIGN_GT, SIGN, GLOSS, ZEI_GLOSS]
+  aligned_subtitle_tier: SUBTITLE_PREDICTED
+
+segmentation:
+  model: model_E4s-1.pth
+  sign_b_threshold: 30
+  sign_o_threshold: 50
+  overwrite: false
+
+segmentation_eval:
+  iou_thresholds: [0.10, 0.25, 0.50]
+  boundary_tolerance_ms: [100, 200, 400]
+  tune_b_values: [20, 30, 40, 50, 60, 70]
+  tune_o_values: [30, 40, 50, 60, 70]
+  primary_iou_threshold: 0.50
+
+scanner:
+  rgb_model: facebook/dinov2-base
+  device: auto
+  amp: true
+  rgb_batch_size: 32
+  samples_per_segment: 8
+  views: [signer, left_hand, right_hand, face]
+  hand_padding: 2.0
+  face_padding: 1.55
+  signer_padding: 1.20
+  local_fallback_to_signer: true
+  pose_include_confidence: true
+  pose_shoulder_epsilon: 0.02
+  cache_dtype: float16
+  overwrite: false
+
+semantic:
+  text_backend: qwen3_embedding
+  text_model: Qwen/Qwen3-Embedding-0.6B
+  text_cache_layout: by_backend
+  text_instruction: ""
+  text_revision: main  
+  text_device: auto
+  text_amp: true
+  text_batch_size: 4
+  text_max_length: 256
+  text_cache_dtype: float16
+  overwrite_text_cache: false
+  visual_backend: pose_rgb
+  embedding_dim: 512
+  search_radius_seconds: 6.0
+  min_candidate_segments: 8
+  max_candidate_segments: 48
+  max_span_segments: 16
+  max_span_seconds: 14.0
+  align_temperature: 0.07
+  temporal_prior_weight: 0.35
+  temporal_sigma_seconds: 3.0
+  duration_prior_weight: 0.25
+  mil_temperature: 0.10
+  contrastive_temperature: 0.07
+  supervised_iou_temperature: 0.10
+  global_top_k: 8
+  global_decoder: monotonic_dp
+  overlap_penalty: 2.0
+  gap_change_penalty: 0.15
+
+training:
+  device: auto
+  amp: true
+  seed: 42
+  batch_size: 8
+  num_workers: 0
+  epochs: 20
+  learning_rate: 0.0002
+  weight_decay: 0.01
+  grad_clip_norm: 1.0
+  contrastive_weight: 1.0
+  supervised_weight: 1.0
+  save_name: semantic_aligner.pt
+
+alignment:
+  backend: sea_temporal
+  sign_eaf_dir: null
+  duration_penalty_weight: 1.0
+  gap_penalty_weight: 5.0
+  max_gap_seconds: 10.0
+  candidate_window_size: 50
+  pre_shift_start_seconds: 0.0
+  pre_shift_end_seconds: 0.0
+  post_shift_start_seconds: 0.0
+  post_shift_end_seconds: 0.0
+  similarity_weight: 0.0
+  max_boundary_shift_seconds: 1.5
+  auto_apply_small_shifts: false
+  write_updated_eaf: true
+  overwrite: false
