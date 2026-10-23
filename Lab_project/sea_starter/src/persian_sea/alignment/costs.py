@@ -1,4 +1,6 @@
-from persian_sea.types import Cue, SignSegment
+
+from persian_sea.io.subtitles import SubtitleCue as Cue
+from persian_sea.types import SignSegment
 
 
 def total_internal_gap(signs: list[SignSegment]) -> float:
