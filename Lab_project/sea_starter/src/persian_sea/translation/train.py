@@ -1,8 +1,4 @@
-"""One-GPU initial Persian generation training after VLP warm-up.
 
-Runs teacher-forced Persian seq2seq on weak-timed video/text pairs.
-Selects the best checkpoint on held-out validation loss only.
-"""
 from __future__ import annotations
 
 from dataclasses import asdict
@@ -32,8 +28,6 @@ def seed_everything(seed: int):
 
 
 def device_auto() -> torch.device:
-    # Train on CUDA when possible. Apple MPS left out of initial production run
-    # because model/kernel support and memory pressure should be profiled first.
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -132,7 +126,7 @@ def run_training(cfg: TranslationConfig, resume: str | None = None) -> Path:
             loss = result.loss.float()
             if not torch.isfinite(loss):
                 raise FloatingPointError("Nonfinite train loss; stop and inspect inputs / learning rate")
-            # Divide by actual number of minibatches in the final group.
+
             is_end = batch_index + 1 == len(train_loader)
             (loss / cfg.accumulation_steps).backward()
             accumulation += 1
@@ -172,7 +166,7 @@ def run_training(cfg: TranslationConfig, resume: str | None = None) -> Path:
                    "step": step, "best_val_loss": best_loss}
         save_atomic(payload, latest)
         if improved:
-            # Best is for evaluation/inference; optimizer state kept only in last.
+
             best_payload = dict(payload)
             best_payload.pop("optimizer")
             save_atomic(best_payload, best)
