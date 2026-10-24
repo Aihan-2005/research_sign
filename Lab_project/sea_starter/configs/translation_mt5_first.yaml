@@ -1,0 +1,32 @@
+
+visual_config: configs/video_text_pretrain_first.yaml
+visual_checkpoint: outputs/video_text/pretrain_first/best_video_text.pt
+require_pretrained_visual: true
+model_name: google/mt5-small
+train_ids: data/train_ids.txt
+val_ids: data/val_ids.txt
+test_ids: data/test_ids.txt
+subtitles_dir: data/subtitles_raw
+visual_cache_dir: outputs/features
+output_dir: outputs/translation/mt5_first
+
+signer_metadata: ""
+strict_signer: false
+
+max_candidate_segments: 48
+min_candidate_segments: 4
+cue_margin_seconds: 2.0
+max_source_segments: 32
+max_target_tokens: 96
+
+inference_stride_segments: 32
+batch_size: 1
+accumulation_steps: 4
+epochs: 4
+max_train_steps: 0
+learning_rate: 0.00003
+weight_decay: 0.01
+freeze_visual: true
+amp: false
+seed: 42
+max_generate_tokens: 96
