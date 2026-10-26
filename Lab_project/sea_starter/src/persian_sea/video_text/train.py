@@ -32,8 +32,16 @@ def checkpoint_architecture(raw: dict) -> dict:
 def verify_checkpoint_text_source(stored_cfg: dict, cfg: VideoTextConfig) -> None:
 
     for key in ("text_backend", "text_model", "text_instruction",
-                "require_text_cache_metadata", "pair_source"):
-        default = False if key == "require_text_cache_metadata" else ("raw" if key == "pair_source" else "")
+                "require_text_cache_metadata", "pair_source",
+                "approved_subtitles_dir", "sea_alignment_dir", "semantic_alignment_dir",
+                "max_alignment_shift_seconds"):
+        default = {
+            "require_text_cache_metadata": False, "pair_source": "raw",
+            "approved_subtitles_dir": "data/subtitles_approved",
+            "sea_alignment_dir": "outputs/aligned_subtitles",
+            "semantic_alignment_dir": "outputs/aligned_subtitles/semantic",
+            "max_alignment_shift_seconds": 0.0,
+        }.get(key, "")
         if stored_cfg.get(key, default) != getattr(cfg, key):
             raise ValueError(f"Checkpoint text/source provenance differs: {key}")
 
@@ -194,6 +202,7 @@ def run_training(cfg:VideoTextConfig,resume:str|None=None):
         with logfile.open('a',encoding='utf-8') as fh:
             fh.write(json.dumps(row,ensure_ascii=False)+'\n')
         print(f"[video_text] {json.dumps(row,ensure_ascii=False)}")
+
         if metric is None:
             raise ValueError('Validation has no reliable cross-video distractors')
         if metric>best_r1:
@@ -223,3 +232,4 @@ def evaluate_checkpoint(cfg:VideoTextConfig,checkpoint_path:str|Path):
     model=VideoTextModel(cfg,*ckpt['dims']).to(device)
     model.load_state_dict(ckpt['model'])
     return evaluate(model,dataset,cfg,device)
+

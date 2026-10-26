@@ -1,4 +1,5 @@
 
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -27,11 +28,9 @@ def generate_video(cfg: TranslationConfig, video_id: str, checkpoint: str,
     rgb_dim, views = int(d["rgb"].shape[-1]), int(d["rgb"].shape[-2])
     if list(payload["rgb_dims"]) != [rgb_dim, views]:
         raise ValueError("Incompatible visual dimensions in prediction cache")
-    from transformers import AutoTokenizer
+    from persian_sea.translation.language import load_tokenizer
     tokenizer_dir = Path(checkpoint).parent / "tokenizer"
-    tokenizer = AutoTokenizer.from_pretrained(
-        str(tokenizer_dir) if tokenizer_dir.is_dir() else cfg.model_name,
-        use_fast=False)
+    tokenizer = load_tokenizer(cfg, checkpoint_dir=Path(checkpoint).parent)
     model = build_model(replace(cfg, require_pretrained_visual=False), rgb_dim, views)
     model.load_state_dict(payload["model"], strict=True)
     device = device_auto()

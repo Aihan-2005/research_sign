@@ -1,4 +1,5 @@
 
+
 from __future__ import annotations
 
 from collections import OrderedDict
@@ -11,6 +12,7 @@ from torch.utils.data import Dataset
 
 from persian_sea.io.subtitles import find_subtitle, read_subtitles
 from persian_sea.semantic.candidates import select_candidate_indices
+from persian_sea.alignment_sources import AlignmentSourceSettings, load_alignment_cues
 from persian_sea.translation.config import TranslationConfig
 
 
@@ -74,6 +76,7 @@ def load_ids(path: str | Path) -> list[str]:
 
 class TranslationCueDataset(Dataset):
 
+
     def __init__(self, cfg: TranslationConfig, ids_path: str | Path):
         self.cfg = cfg.validate()
         self.refs: list[Ref] = []
@@ -83,9 +86,15 @@ class TranslationCueDataset(Dataset):
             visual = Path(cfg.visual_cache_dir) / f"{vid}.npz"
             if source is None or not visual.is_file():
                 raise FileNotFoundError(f"Need VTT and visual cache for {vid}: {source}, {visual}")
-            for i, cue in enumerate(read_subtitles(source)):
+            raw_cues = read_subtitles(source)
+            aligned, _ = load_alignment_cues(vid, raw_cues, AlignmentSourceSettings(
+                mode=cfg.pair_source, approved_dir=cfg.approved_subtitles_dir,
+                sea_dir=cfg.sea_alignment_dir, semantic_dir=cfg.semantic_alignment_dir,
+                max_shift_seconds=cfg.max_alignment_shift_seconds))
+            for i, (cue, timing) in enumerate(zip(raw_cues, aligned)):
                 if cue.text.strip():
-                    self.refs.append(Ref(vid, i, cue.text, cue.start, cue.end))
+
+                    self.refs.append(Ref(vid, i, cue.text, timing.start, timing.end))
         if not self.refs:
             raise ValueError("No nonempty Persian sentences in selected videos")
 
@@ -102,6 +111,7 @@ class TranslationCueDataset(Dataset):
             min_candidates=self.cfg.min_candidate_segments,
             max_candidates=self.cfg.max_candidate_segments,
         )
+
         if len(indices) > self.cfg.max_source_segments:
             middle = (ref.start + ref.end) * 0.5
             centers = (d["starts"][indices] + d["ends"][indices]) / 2.0
@@ -114,6 +124,7 @@ class TranslationCueDataset(Dataset):
 
 
 def inference_windows(d: dict, window_size: int, stride: int) -> list[np.ndarray]:
+
     if not (1 <= stride <= window_size):
         raise ValueError("Require 1 <= stride <= window_size")
     n = len(d["starts"])
@@ -123,7 +134,7 @@ def inference_windows(d: dict, window_size: int, stride: int) -> list[np.ndarray
             for start in range(0, n, stride)]
 
 
-def collate(batch: list[dict], tokenizer, max_target_tokens: int, include_targets: bool = True) -> dict:
+def collate(batch: list[dict], tokenizer, max_target_tokens: int, include_targets: bool = True, translation_backend: str = "mt5") -> dict:
     if not batch:
         raise ValueError("Empty batch")
     b, m = len(batch), max(len(x["starts"]) for x in batch)
@@ -144,8 +155,13 @@ def collate(batch: list[dict], tokenizer, max_target_tokens: int, include_target
     output = {"pose": pose, "rgb": rgb, "starts": starts, "ends": ends, "mask": mask}
     if include_targets:
         texts = [x["text"] for x in batch]
-        encoded = tokenizer(texts, padding=True, truncation=True,
-                            max_length=max_target_tokens, return_tensors="pt")
+        
+        if translation_backend == "mbart50":
+            encoded = tokenizer(text_target=texts, padding=True, truncation=True,
+                                max_length=max_target_tokens, return_tensors="pt")
+        else:
+            encoded = tokenizer(texts, padding=True, truncation=True,
+                                max_length=max_target_tokens, return_tensors="pt")
         labels = encoded["input_ids"].clone()
         labels[encoded["attention_mask"] == 0] = -100
         output["labels"] = labels

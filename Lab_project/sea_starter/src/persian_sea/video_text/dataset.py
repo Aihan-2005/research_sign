@@ -10,6 +10,7 @@ from torch.utils.data import Dataset, Sampler
 
 from persian_sea.io.subtitles import find_subtitle, read_subtitles, normalize_persian_text
 from persian_sea.semantic.candidates import select_candidate_indices
+from persian_sea.alignment_sources import AlignmentSourceSettings, load_alignment_cues
 from persian_sea.text.cache_identity import validate_sidecar, identity_digest
 from .config import VideoTextConfig
 
@@ -40,7 +41,6 @@ class TextArrays:
 
 
 def _load_visual(path: Path) -> VisualArrays:
-    # npz is compressed: decompress ONCE per cached original video, not per cue.
     with np.load(path, allow_pickle=False) as f:
         return VisualArrays(f['pose'].astype(np.float32), f['rgb'].astype(np.float32),
                             f['starts'].astype(np.float32), f['ends'].astype(np.float32))
@@ -52,7 +52,6 @@ def _load_text(path: Path) -> TextArrays:
 
 
 class _LRUCaches:
-    """Lazily load at most n original-video caches per worker."""
     def __init__(self, n: int = 2):
         self.n = n
         self._vis: OrderedDict[str, VisualArrays] = OrderedDict()
@@ -96,14 +95,10 @@ class VideoTextDataset(Dataset):
                     "instruction": cfg.text_instruction,
                 }, strict=True)
             raw = read_subtitles(subs)
-            approved = None
-            if cfg.pair_source == "approved":
-                approved_path = find_subtitle(Path(cfg.approved_subtitles_dir), vid)
-                if approved_path is None:
-                    raise FileNotFoundError(f"Approved timestamps missing: {vid}")
-                approved = read_subtitles(approved_path)
-                if len(approved) != len(raw) or any(a.text != b.text for a,b in zip(raw,approved)):
-                    raise ValueError(f"Approved subtitle text/order mismatch: {vid}")
+            aligned, alignment_file = load_alignment_cues(vid, raw, AlignmentSourceSettings(
+                mode=cfg.pair_source, approved_dir=cfg.approved_subtitles_dir,
+                sea_dir=cfg.sea_alignment_dir, semantic_dir=cfg.semantic_alignment_dir,
+                max_shift_seconds=cfg.max_alignment_shift_seconds))
             with np.load(text_path, allow_pickle=False) as tc, np.load(visual_path, allow_pickle=False) as vc:
                 if cache_metadata is not None:
                     expected_hash = identity_digest(cache_metadata["identity"])
@@ -115,14 +110,18 @@ class VideoTextDataset(Dataset):
                     raise ValueError(f"Stale text cache (texts/order): {vid}")
                 starts, ends = vc["starts"], vc["ends"]
                 if (not len(starts) or len(starts) != len(ends)
+                    or not np.isfinite(starts).all() or not np.isfinite(ends).all()
                     or np.any(ends <= starts) or np.any(np.diff(starts) < 0)):
                     raise ValueError(f"Invalid ordered visual signs: {vid}")
                 if (vc["pose"].shape[0] != len(starts) or vc["rgb"].shape[0] != len(starts)
                     or vc["pose"].ndim != 4 or vc["rgb"].ndim != 4
                     or vc["pose"].shape[-2:] != (75, 4)):
                     raise ValueError(f"Invalid visual feature shape for {vid}")
+                if (not np.isfinite(vc["pose"]).all() or not np.isfinite(vc["rgb"]).all()
+                    or not np.isfinite(tc["embeddings"]).all()):
+                    raise ValueError(f"Nonfinite visual/text features for {vid}")
             for i,c in enumerate(raw):
-                matching = approved[i] if approved is not None else c
+                matching = aligned[i]
                 if c.text and c.end > c.start:
                     self.refs.append(CueRef(vid,i,c.text,c.start,c.end,matching.start,matching.end))
         if not self.refs:
@@ -180,11 +179,8 @@ def collate_video_text(batch):
             "rough_end":torch.tensor([i["rough_end"] for i in batch])}
 
 class VideoDiverseBatchSampler(Sampler[list[int]]):
-    """At most one cue per video per batch; avoids invalid same-video negatives.
 
-    Every epoch draws up to one cue per video per *round*, thus may omit a few
-    leftover cues when only one video remains. A new epoch reshuffles.
-    """
+
     def __init__(self, refs: list[CueRef], batch_size: int, seed:int=42, drop_last:bool=True):
         self.refs,self.batch_size,self.seed,self.drop_last=refs,batch_size,seed,drop_last
         self.epoch=0
@@ -211,7 +207,6 @@ class VideoDiverseBatchSampler(Sampler[list[int]]):
                 yield batch
 
     def __len__(self):
-        # Upper estimate; __iter__ may discard leftovers to ensure video-diversity.
         return sum(map(len,self.groups.values()))//self.batch_size
 
 

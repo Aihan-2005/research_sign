@@ -1,0 +1,40 @@
+
+
+train_ids: data/train_ids.txt
+val_ids: data/val_ids.txt
+test_ids: data/test_ids.txt
+subtitles_dir: data/subtitles_raw
+approved_subtitles_dir: data/subtitles_approved
+feature_cache_dir: outputs/features
+text_cache_dir: outputs/text_features/bge_m3
+output_dir: outputs/video_text/pretrain_approved_ablation
+pair_source: approved
+visual_backend: pose_rgb
+embedding_dim: 256
+model_dim: 384
+temporal_layers: 1
+temporal_heads: 4
+visual_microbatch: 4
+candidate_margin_seconds: 4.0
+min_candidate_segments: 4
+max_candidate_segments: 24
+span_sizes: [1, 2, 4, 8]
+span_pooling: mean
+text_backend: bge_m3
+text_model: BAAI/bge-m3
+text_instruction: ""
+require_text_cache_metadata: true
+mil_temperature: 0.10
+contrastive_temperature: 0.07
+batch_size: 2
+learning_rate: 0.0001
+weight_decay: 0.01
+epochs: 8
+max_train_steps: 100
+val_max_samples: 128
+num_workers: 0
+amp: true
+grad_clip_norm: 1.0
+seed: 42
+checkpoint_name: best_video_text.pt
+minimum_videos_per_batch: 2

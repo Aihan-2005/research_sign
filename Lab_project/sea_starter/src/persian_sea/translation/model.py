@@ -1,4 +1,5 @@
 
+
 from __future__ import annotations
 
 from contextlib import nullcontext
@@ -76,7 +77,7 @@ class PersianTranslator(nn.Module):
 
 
 def load_visual_tower(cfg: TranslationConfig, rgb_dim: int, views: int):
-    """Load the exact pretraining checkpoint architecture; fail on mismatch."""
+
     vt_cfg = read_video_config(cfg.visual_config)
     if cfg.require_pretrained_visual:
         path = Path(cfg.visual_checkpoint)
@@ -99,7 +100,6 @@ def load_visual_tower(cfg: TranslationConfig, rgb_dim: int, views: int):
             raise ValueError(f"Visual cache dims {(rgb_dim, views)} differ from checkpoint "
                              f"{(trained_rgb_dim, trained_views)}")
     else:
-        # Explicit experimental escape hatch for synthetic smoke tests only.
         text_dim = 1024
         ckpt = None
     model = VideoTextModel(vt_cfg, text_dim=text_dim, rgb_dim=rgb_dim, num_views=views)
@@ -112,4 +112,7 @@ def build_model(cfg: TranslationConfig, rgb_dim: int, views: int):
     from transformers import AutoModelForSeq2SeqLM
     visual, dim = load_visual_tower(cfg, rgb_dim, views)
     seq2seq = AutoModelForSeq2SeqLM.from_pretrained(cfg.model_name)
+    if cfg.translation_backend == "mbart50":
+        from persian_sea.translation.language import load_tokenizer, configure_generation
+        seq2seq = configure_generation(seq2seq, load_tokenizer(cfg), cfg)
     return PersianTranslator(visual, dim, seq2seq, cfg.freeze_visual)

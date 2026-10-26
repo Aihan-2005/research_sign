@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -15,28 +16,47 @@ class TranslationConfig:
     val_ids: str = "data/val_ids.txt"
     test_ids: str = "data/test_ids.txt"
     subtitles_dir: str = "data/subtitles_raw"
+    pair_source: str = "raw"
+    approved_subtitles_dir: str = "data/subtitles_approved"
+    sea_alignment_dir: str = "outputs/aligned_subtitles"
+    semantic_alignment_dir: str = "outputs/aligned_subtitles/semantic"
+    max_alignment_shift_seconds: float = 0.0
+    translation_backend: str = "mt5"  
+    target_lang: str = "fa_IR" 
     visual_cache_dir: str = "outputs/features"
     output_dir: str = "outputs/translation/mt5_first"
-    signer_metadata: str = "" 
+    signer_metadata: str = ""  
     strict_signer: bool = False
     max_candidate_segments: int = 48
     min_candidate_segments: int = 4
     cue_margin_seconds: float = 2.0
     max_target_tokens: int = 96
-    max_source_segments: int = 32  
-    inference_stride_segments: int = 32  
+    max_source_segments: int = 32 
+    inference_stride_segments: int = 32 
     batch_size: int = 1
     accumulation_steps: int = 4
     epochs: int = 4
-    max_train_steps: int = 0  # 0=unlimited
+    max_train_steps: int = 0  
     learning_rate: float = 3e-5
     weight_decay: float = 0.01
     freeze_visual: bool = True
-    amp: bool = False 
+    amp: bool = False  
     seed: int = 42
     max_generate_tokens: int = 96
 
     def validate(self) -> "TranslationConfig":
+        from persian_sea.alignment_sources import AlignmentSourceSettings
+        AlignmentSourceSettings(self.pair_source, self.approved_subtitles_dir,
+            self.sea_alignment_dir, self.semantic_alignment_dir,
+            self.max_alignment_shift_seconds).validate()
+        if self.translation_backend not in {"mt5", "mbart50"}:
+            raise ValueError("translation_backend must be mt5 or mbart50")
+        if self.translation_backend == "mbart50" and "mbart" not in self.model_name.lower():
+            raise ValueError("mbart50 backend requires an mBART checkpoint model_name")
+        if self.translation_backend == "mt5" and "mbart" in self.model_name.lower():
+            raise ValueError("mBART model_name requires translation_backend=mbart50")
+        if self.translation_backend == "mbart50" and self.target_lang != "fa_IR":
+            raise ValueError("This Persian mBART baseline requires target_lang=fa_IR")
         if not self.model_name or not self.visual_config:
             raise ValueError("model_name and visual_config are required")
         if not (1 <= self.min_candidate_segments <= self.max_candidate_segments):

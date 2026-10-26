@@ -1,4 +1,5 @@
 
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -20,7 +21,7 @@ def evaluate_split(cfg: TranslationConfig, split: str, checkpoint: str,
                    output: str | None = None) -> Path:
     if split not in ("val", "test"):
         raise ValueError("Only disjoint validation and test splits can be evaluated")
-    from transformers import AutoTokenizer
+    from persian_sea.translation.language import load_tokenizer
     import sacrebleu
 
     ids = cfg.val_ids if split == "val" else cfg.test_ids
@@ -30,12 +31,11 @@ def evaluate_split(cfg: TranslationConfig, split: str, checkpoint: str,
     if cfg != trained_cfg:
         raise ValueError("Evaluation config differs from the checkpoint config")
     tokenizer_dir = Path(checkpoint).parent / "tokenizer"
-    tokenizer = AutoTokenizer.from_pretrained(
-        str(tokenizer_dir) if tokenizer_dir.is_dir() else cfg.model_name,
-        use_fast=False)
+    tokenizer = load_tokenizer(cfg, checkpoint_dir=Path(checkpoint).parent)
     loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=False, num_workers=0,
                         collate_fn=partial(collate, tokenizer=tokenizer,
-                                           max_target_tokens=cfg.max_target_tokens))
+                                           max_target_tokens=cfg.max_target_tokens,
+                                           translation_backend=cfg.translation_backend))
     item = dataset[0]
     dims = (item["rgb"].shape[-1], item["rgb"].shape[-2])
     if tuple(payload["rgb_dims"]) != dims:

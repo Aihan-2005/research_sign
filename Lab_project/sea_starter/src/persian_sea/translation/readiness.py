@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -5,6 +6,7 @@ import json
 import numpy as np
 
 from persian_sea.io.subtitles import find_subtitle, read_subtitles
+from persian_sea.alignment_sources import AlignmentSourceSettings, load_alignment_cues
 from persian_sea.video_text.dataset import check_disjoint_splits
 from persian_sea.translation.config import TranslationConfig
 from persian_sea.translation.data import load_ids, validate_cache
@@ -54,8 +56,13 @@ def readiness_report(cfg: TranslationConfig, *, require_all: bool = True) -> dic
                 texts = read_subtitles(sub)
                 if not texts or not any(c.text.strip() for c in texts):
                     raise ValueError("empty text cues")
+
+                load_alignment_cues(vid, texts, AlignmentSourceSettings(
+                    mode=cfg.pair_source, approved_dir=cfg.approved_subtitles_dir,
+                    sea_dir=cfg.sea_alignment_dir, semantic_dir=cfg.semantic_alignment_dir,
+                    max_shift_seconds=cfg.max_alignment_shift_seconds))
                 with np.load(path, allow_pickle=False) as f:
-                    # Full tensor integrity check; expensive only for large caches.
+
                     d = {k: f[k] for k in ("pose", "rgb", "starts", "ends")}
                 validate_cache(d, path)
                 signature = (tuple(d["pose"].shape[1:]), tuple(d["rgb"].shape[1:]))
@@ -67,7 +74,8 @@ def readiness_report(cfg: TranslationConfig, *, require_all: bool = True) -> dic
                 cues += sum(bool(c.text.strip()) for c in texts)
             except (ValueError, OSError, KeyError) as exc:
                 errors.append(f"{split}/{vid}: {exc}")
-        checked[split] = {"videos": videos, "nonempty_cues": cues}
+        checked[split] = {"videos": videos, "nonempty_cues": cues,
+                          "pair_source": cfg.pair_source}
     result["checked"] = checked
     if feature_signature is not None:
         result["visual_shapes_without_video_axis"] = [list(s) for s in feature_signature]

@@ -12,6 +12,8 @@ from persian_sea.video_text.dataset import check_disjoint_splits
 from persian_sea.video_text.split_audit import audit_signer_splits
 from persian_sea.features.cache_audit import inspect_cache_pair
 from persian_sea.translation.data import load_ids
+from persian_sea.io.subtitles import find_subtitle, read_subtitles
+from persian_sea.alignment_sources import AlignmentSourceSettings, load_alignment_cues
 from persian_sea.text.cache_identity import validate_sidecar
 
 
@@ -19,7 +21,8 @@ def gate(config: str, metadata: str = "", strict_signer: bool = False,
          app_config: str = "configs/baseline.yaml") -> dict:
     cfg = read_config(config)
     app = load_config(app_config)
-    report = {"ok": False, "errors": [], "warnings": [], "splits": {}, "checks": {}}
+    report = {"ok": False, "errors": [], "warnings": [], "splits": {}, "checks": {},
+              "pair_source": cfg.pair_source}
     errors = report["errors"]
     try:
         counts = check_disjoint_splits(cfg.train_ids, cfg.val_ids, cfg.test_ids)
@@ -45,6 +48,19 @@ def gate(config: str, metadata: str = "", strict_signer: bool = False,
                         ("test", cfg.test_ids)):
         count = 0
         for vid in load_ids(file):
+
+            try:
+                raw_path = find_subtitle(Path(cfg.subtitles_dir), vid)
+                if raw_path is None:
+                    raise FileNotFoundError(f"Raw VTT missing for {vid}")
+                load_alignment_cues(vid, read_subtitles(raw_path), AlignmentSourceSettings(
+                    mode=cfg.pair_source, approved_dir=cfg.approved_subtitles_dir,
+                    sea_dir=cfg.sea_alignment_dir, semantic_dir=cfg.semantic_alignment_dir,
+                    max_shift_seconds=cfg.max_alignment_shift_seconds))
+            except (ValueError, OSError) as exc:
+                errors.append(f"{split}/{vid}: alignment source invalid: {exc}")
+                continue
+
             row = inspect_cache_pair(
                 vid, Path(cfg.feature_cache_dir), Path(cfg.text_cache_dir),
                 Path(cfg.subtitles_dir),

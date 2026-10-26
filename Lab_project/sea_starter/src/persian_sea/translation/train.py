@@ -1,4 +1,5 @@
 
+
 from __future__ import annotations
 
 from dataclasses import asdict
@@ -28,6 +29,7 @@ def seed_everything(seed: int):
 
 
 def device_auto() -> torch.device:
+    
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -66,7 +68,7 @@ def validation_loss(model, loader, device) -> float:
 
 def run_training(cfg: TranslationConfig, resume: str | None = None) -> Path:
     cfg.validate()
-    # Do not download a 1GB seq2seq decoder before the data checks finish.
+
     report = readiness_report(cfg, require_all=True)
     write_report(report, Path(cfg.output_dir) / "readiness.json")
     if not report["ok"]:
@@ -76,13 +78,14 @@ def run_training(cfg: TranslationConfig, resume: str | None = None) -> Path:
     if device.type != "cuda":
         raise RuntimeError("Real translation training requires CUDA in this first release; "
                            "run check on Mac and train on the university GPU server")
-    from transformers import AutoTokenizer
+    from persian_sea.translation.language import load_tokenizer
     seed_everything(cfg.seed)
     train_set = TranslationCueDataset(cfg, cfg.train_ids)
     val_set = TranslationCueDataset(cfg, cfg.val_ids)
-    tokenizer = AutoTokenizer.from_pretrained(cfg.model_name, use_fast=False)
+    tokenizer = load_tokenizer(cfg)
     make_batch = partial(collate, tokenizer=tokenizer,
-                         max_target_tokens=cfg.max_target_tokens)
+                         max_target_tokens=cfg.max_target_tokens,
+                         translation_backend=cfg.translation_backend)
     train_loader = DataLoader(train_set, batch_size=cfg.batch_size, shuffle=True,
                               num_workers=0, collate_fn=make_batch,
                               pin_memory=torch.cuda.is_available())
@@ -166,6 +169,7 @@ def run_training(cfg: TranslationConfig, resume: str | None = None) -> Path:
                    "step": step, "best_val_loss": best_loss}
         save_atomic(payload, latest)
         if improved:
+
 
             best_payload = dict(payload)
             best_payload.pop("optimizer")
