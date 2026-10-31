@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -99,6 +98,10 @@ class VideoTextDataset(Dataset):
                 mode=cfg.pair_source, approved_dir=cfg.approved_subtitles_dir,
                 sea_dir=cfg.sea_alignment_dir, semantic_dir=cfg.semantic_alignment_dir,
                 max_shift_seconds=cfg.max_alignment_shift_seconds))
+            # A positive offset moves the candidate-search interval forward.
+            # Do not add it to approved/SEA/semantic timestamps: those sources
+            # are already intended to represent corrected sign timing.
+            offset = cfg.get_subtitle_offset(vid) if cfg.pair_source == "raw" else 0.0
             with np.load(text_path, allow_pickle=False) as tc, np.load(visual_path, allow_pickle=False) as vc:
                 if cache_metadata is not None:
                     expected_hash = identity_digest(cache_metadata["identity"])
@@ -120,10 +123,20 @@ class VideoTextDataset(Dataset):
                 if (not np.isfinite(vc["pose"]).all() or not np.isfinite(vc["rgb"]).all()
                     or not np.isfinite(tc["embeddings"]).all()):
                     raise ValueError(f"Nonfinite visual/text features for {vid}")
-            for i,c in enumerate(raw):
+            for i, c in enumerate(raw):
                 matching = aligned[i]
                 if c.text and c.end > c.start:
-                    self.refs.append(CueRef(vid,i,c.text,c.start,c.end,matching.start,matching.end))
+                    matching_start = max(0.0, float(matching.start) + offset)
+                    matching_end = float(matching.end) + offset
+                    if matching_end <= matching_start:
+                        raise ValueError(
+                            f"Offset {offset:.3f}s makes cue invalid for {vid}#{i}: "
+                            f"{matching.start:.3f}-{matching.end:.3f}s"
+                        )
+                    self.refs.append(CueRef(
+                        vid, i, c.text, c.start, c.end,
+                        matching_start, matching_end,
+                    ))
         if not self.refs:
             raise ValueError("No usable video/text pairs")
 
@@ -178,8 +191,8 @@ def collate_video_text(batch):
             "rough_start":torch.tensor([i["rough_start"] for i in batch]),
             "rough_end":torch.tensor([i["rough_end"] for i in batch])}
 
-class VideoDiverseBatchSampler(Sampler[list[int]]):
 
+class VideoDiverseBatchSampler(Sampler[list[int]]):
 
     def __init__(self, refs: list[CueRef], batch_size: int, seed:int=42, drop_last:bool=True):
         self.refs,self.batch_size,self.seed,self.drop_last=refs,batch_size,seed,drop_last

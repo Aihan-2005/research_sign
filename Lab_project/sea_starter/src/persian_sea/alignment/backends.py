@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
@@ -22,12 +21,12 @@ class SEATemporalAligner:
     dp_config: DPConfig
 
     def propose(self, subtitles: Sequence, signs: Sequence) -> list[AlignmentProposal]:
-
-
         if not signs:
+            if self.dp_config.allow_null_alignment:
+                return []
             raise ValueError("No sign units. Run/check segmentation or use original backend")
         raw = align_monotonic_dp(list(subtitles), list(signs), self.dp_config)
-        if len(raw) != len(subtitles):
+        if len(raw) != len(subtitles) and not self.dp_config.allow_null_alignment:
             raise ValueError("SEA DP did not align each subtitle; inspect segmentation")
         return [
             AlignmentProposal(x.cue_index, TimeSpan(x.start, x.end), "sea_temporal")

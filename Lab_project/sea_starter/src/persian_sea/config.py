@@ -82,10 +82,10 @@ class ScannerConfig:
 @dataclass(frozen=True)
 class SemanticConfig:
     text_model: str = "BAAI/bge-m3"
-    text_backend: str = "bge_m3"  # alternatives: qwen3_embedding
-    text_cache_layout: str = "legacy"  # legacy | by_backend
-    text_instruction: str = ""  # optional Qwen query instruction
-    text_revision: str = "main"  # pin a commit SHA for reproducibility
+    text_backend: str = "bge_m3"
+    text_cache_layout: str = "legacy"
+    text_instruction: str = ""
+    text_revision: str = "main"
     text_device: str = "auto"
     text_amp: bool = True
     text_batch_size: int = 16
@@ -93,7 +93,7 @@ class SemanticConfig:
     text_cache_dtype: str = "float16"
     overwrite_text_cache: bool = False
     embedding_dim: int = 512
-    visual_backend: str = "pose_rgb"  # alternatives: pose_only
+    visual_backend: str = "pose_rgb"
     search_radius_seconds: float = 6.0
     min_candidate_segments: int = 8
     max_candidate_segments: int = 48
@@ -139,11 +139,13 @@ class AlignmentConfig:
     post_shift_start_seconds: float = 0.0
     post_shift_end_seconds: float = 0.0
     similarity_weight: float = 0.0
+    # Experimental null/abstention path. Disabled to preserve baseline behavior.
+    allow_null_alignment: bool = False
+    null_alignment_penalty: float = 30.0
     write_updated_eaf: bool = True
     overwrite: bool = False
-    # New pluggable, conservative baseline controls (old configs supported).
-    backend: str = "sea_temporal"  # alternative: original
-    sign_eaf_dir: str | None = None  # optional externally supplied ELAN SIGN tier
+    backend: str = "sea_temporal"
+    sign_eaf_dir: str | None = None
     max_boundary_shift_seconds: float = 1.5
     auto_apply_small_shifts: bool = False
 
@@ -203,4 +205,3 @@ def segmentation_subdir(cfg: AppConfig) -> Path:
     s = cfg.segmentation
     return cfg.paths.segmentation_output / segmentation_run_name(
         s.model, s.sign_b_threshold, s.sign_o_threshold)
-

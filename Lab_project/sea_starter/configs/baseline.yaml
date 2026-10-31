@@ -57,12 +57,11 @@ scanner:
   overwrite: false
 
 semantic:
-
   text_backend: bge_m3
   text_model: BAAI/bge-m3
   text_cache_layout: by_backend
   text_instruction: ""
-  text_revision: main  
+  text_revision: main
   text_device: auto
   text_amp: true
   text_batch_size: 16
@@ -114,6 +113,8 @@ alignment:
   post_shift_start_seconds: 0.0
   post_shift_end_seconds: 0.0
   similarity_weight: 0.0
+  allow_null_alignment: false
+  null_alignment_penalty: 30.0
   max_boundary_shift_seconds: 1.5
   auto_apply_small_shifts: false
   write_updated_eaf: true

@@ -36,3 +36,6 @@ grad_clip_norm: 1.0
 seed: 42
 checkpoint_name: best_video_text.pt
 minimum_videos_per_batch: 2
+
+subtitle_to_sign_offset_seconds: 2.0
+subtitle_offsets_by_video: {}

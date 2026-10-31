@@ -1,5 +1,3 @@
-
-
 from __future__ import annotations
 from dataclasses import asdict
 from pathlib import Path
@@ -15,7 +13,6 @@ from persian_sea.io.subtitles import SubtitleCue, find_subtitle, read_subtitles,
 
 
 def align_one(video_id: str, cfg: AppConfig) -> Path:
-
     subtitle_path = find_subtitle(cfg.paths.subtitles_raw, video_id)
     if subtitle_path is None:
         raise FileNotFoundError(f"Subtitle missing for {video_id}")
@@ -34,13 +31,20 @@ def align_one(video_id: str, cfg: AppConfig) -> Path:
         if not source_eaf.exists():
             raise FileNotFoundError(f"Need SIGN segments: {source_eaf}")
         signs, _ = read_sign_segments(source_eaf, cfg.elan.sign_tiers)
+    if cfg.alignment.similarity_weight != 0.0:
+        raise ValueError(
+            "SEA pipeline does not currently build a semantic similarity matrix. "
+            "Keep alignment.similarity_weight=0 until a sim_matrix provider is connected."
+        )
     dp_config = DPConfig(
         duration_penalty_weight=cfg.alignment.duration_penalty_weight,
         gap_penalty_weight=cfg.alignment.gap_penalty_weight,
         max_gap_seconds=cfg.alignment.max_gap_seconds,
         candidate_window_size=cfg.alignment.candidate_window_size,
-        similarity_weight=0.0, 
-
+        # Similarity remains zero until the pipeline supplies a real sim_matrix.
+        similarity_weight=cfg.alignment.similarity_weight,
+        allow_null_alignment=cfg.alignment.allow_null_alignment,
+        null_alignment_penalty=cfg.alignment.null_alignment_penalty,
     )
     aligner = alignment_backends.create(backend, dp_config=dp_config)
     shifted_inputs = shifted(
@@ -73,11 +77,12 @@ def align_one(video_id: str, cfg: AppConfig) -> Path:
     report_file.write_text(json.dumps({
         "video_id": video_id, "method": backend,
         "warning": "method scores are NOT calibrated probabilities / verified GT",
+        "null_alignment_enabled": cfg.alignment.allow_null_alignment,
+        "null_alignment_penalty": cfg.alignment.null_alignment_penalty,
         "candidate_vtt": str(proposal_file), "applied_vtt": str(out),
         "decisions": [asdict(d) for d in decisions],
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     if cfg.alignment.write_updated_eaf and source_eaf.exists():
-
         target_eaf = cfg.paths.alignment_output / f"{video_id}.predicted.eaf"
         write_aligned_subtitle_tier(source_eaf, applied, target_eaf,
                                     tier_id=cfg.elan.aligned_subtitle_tier)
