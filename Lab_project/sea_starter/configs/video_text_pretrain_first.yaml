@@ -7,6 +7,10 @@ feature_cache_dir: outputs/features
 text_cache_dir: outputs/text_features/bge_m3
 output_dir: outputs/video_text/pretrain_first
 pair_source: raw
+require_alignment_review: false
+sea_alignment_dir: outputs/aligned_subtitles/sea_semantic_vlp
+semantic_alignment_dir: outputs/aligned_subtitles/semantic
+max_alignment_shift_seconds: 0.0
 visual_backend: pose_rgb
 embedding_dim: 256
 model_dim: 384
@@ -37,5 +41,6 @@ seed: 42
 checkpoint_name: best_video_text.pt
 minimum_videos_per_batch: 2
 
-subtitle_to_sign_offset_seconds: 2.0
+
+subtitle_to_sign_offset_seconds: 0.0
 subtitle_offsets_by_video: {}

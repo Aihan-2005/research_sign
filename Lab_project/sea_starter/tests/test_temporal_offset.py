@@ -1,9 +1,9 @@
 from persian_sea.video_text.config import VideoTextConfig
 
 
-def test_global_subtitle_offset_defaults_to_two_seconds():
+def test_global_subtitle_offset_defaults_to_zero_until_calibrated():
     cfg = VideoTextConfig()
-    assert cfg.get_subtitle_offset("any_video") == 2.0
+    assert cfg.get_subtitle_offset("any_video") == 0.0
 
 
 def test_per_video_offset_overrides_global_default():

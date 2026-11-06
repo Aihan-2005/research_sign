@@ -1,4 +1,3 @@
-
 train_ids: data/train_ids.txt
 val_ids: data/val_ids.txt
 test_ids: data/test_ids.txt
@@ -9,8 +8,11 @@ sea_alignment_dir: outputs/aligned_subtitles/sea_semantic_vlp
 semantic_alignment_dir: outputs/aligned_subtitles/semantic
 require_alignment_review: false
 max_alignment_shift_seconds: 0.0
-subtitle_to_sign_offset_seconds: 2.0
+
+
+subtitle_to_sign_offset_seconds: 0.0
 subtitle_offsets_by_video: {}
+
 visual_cache_dir: outputs/features
 feature_dir: outputs/boundary_features
 vlp_checkpoint: outputs/video_text/pretrain_first/best_video_text.pt

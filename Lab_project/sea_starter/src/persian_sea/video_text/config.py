@@ -1,13 +1,14 @@
 from __future__ import annotations
+
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 import math
+
 import yaml
 
 
 @dataclass(frozen=True)
 class VideoTextConfig:
-
     train_ids: str = "data/train_ids.txt"
     val_ids: str = "data/val_ids.txt"
     test_ids: str = "data/test_ids.txt"
@@ -20,6 +21,7 @@ class VideoTextConfig:
     sea_alignment_dir: str = "outputs/aligned_subtitles"
     semantic_alignment_dir: str = "outputs/aligned_subtitles/semantic"
     max_alignment_shift_seconds: float = 0.0
+    require_alignment_review: bool = False
     visual_backend: str = "pose_rgb"
     embedding_dim: int = 256
     model_dim: int = 384
@@ -50,10 +52,8 @@ class VideoTextConfig:
     checkpoint_name: str = "best_video_text.pt"
     minimum_videos_per_batch: int = 2
 
-    # Positive offset means the sign segment is expected AFTER the subtitle time.
-    # Applied only when pair_source='raw'. Corrected/approved alignment sources
-    # are assumed to already contain sign-aligned timestamps.
-    subtitle_to_sign_offset_seconds: float = 2.0
+
+    subtitle_to_sign_offset_seconds: float = 0.0
     subtitle_offsets_by_video: dict[str, float] = field(default_factory=dict)
 
     def get_subtitle_offset(self, video_id: str) -> float:
@@ -68,14 +68,29 @@ class VideoTextConfig:
     def validate(self):
         if self.span_pooling not in {"mean", "attentive"}:
             raise ValueError("span_pooling must be mean or attentive")
-        if self.require_text_cache_metadata and (not self.text_backend or not self.text_model):
+        if self.require_text_cache_metadata and (
+            not self.text_backend or not self.text_model
+        ):
             raise ValueError("Strict text cache metadata needs text_backend and text_model")
+
         from persian_sea.alignment_sources import AlignmentSourceSettings
-        AlignmentSourceSettings(self.pair_source, self.approved_subtitles_dir,
-            self.sea_alignment_dir, self.semantic_alignment_dir,
-            self.max_alignment_shift_seconds).validate()
-        if not (self.embedding_dim > 0 and self.temporal_layers >= 0 and
-                self.temporal_heads > 0 and self.embedding_dim % self.temporal_heads == 0):
+        AlignmentSourceSettings(
+            mode=self.pair_source,
+            approved_dir=self.approved_subtitles_dir,
+            sea_dir=self.sea_alignment_dir,
+            semantic_dir=self.semantic_alignment_dir,
+            max_shift_seconds=self.max_alignment_shift_seconds,
+            require_alignment_review=self.require_alignment_review,
+        ).validate()
+
+        if not isinstance(self.require_alignment_review, bool):
+            raise ValueError("require_alignment_review must be boolean")
+        if not (
+            self.embedding_dim > 0
+            and self.temporal_layers >= 0
+            and self.temporal_heads > 0
+            and self.embedding_dim % self.temporal_heads == 0
+        ):
             raise ValueError("Bad temporal encoder configuration")
         if not (0 < self.min_candidate_segments <= self.max_candidate_segments):
             raise ValueError("Invalid candidate segment limits")

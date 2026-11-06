@@ -1,4 +1,3 @@
-
 visual_config: configs/video_text_pretrain_first.yaml
 visual_checkpoint: outputs/video_text/pretrain_first/best_video_text.pt
 require_pretrained_visual: true
@@ -7,6 +6,17 @@ train_ids: data/train_ids.txt
 val_ids: data/val_ids.txt
 test_ids: data/test_ids.txt
 subtitles_dir: data/subtitles_raw
+
+
+pair_source: raw
+approved_subtitles_dir: data/subtitles_approved
+sea_alignment_dir: outputs/aligned_subtitles/sea_semantic_vlp
+semantic_alignment_dir: outputs/aligned_subtitles/semantic
+max_alignment_shift_seconds: 0.0
+require_alignment_review: false
+subtitle_to_sign_offset_seconds: 0.0
+subtitle_offsets_by_video: {}
+
 visual_cache_dir: outputs/features
 output_dir: outputs/translation/mt5_first
 
