@@ -48,6 +48,22 @@ class TranslationConfig:
     seed: int = 42
     max_generate_tokens: int = 96
 
+    # DualAnchor/VTaMo-inspired token-level alignment.
+    # Disabled by default so the original baseline config remains unchanged.
+    ota_enabled: bool = False
+    ota_weight: float = 0.10
+    ota_epsilon: float = 0.07
+    ota_iterations: int = 30
+    ota_dustbin_cost: float = 0.35
+    ota_temporal_weight: float = 0.01
+    ota_detach_text: bool = False
+
+
+    tpa_enabled: bool = False
+    tpa_weight: float = 0.05
+    tpa_temperature: float = 1.0
+    tpa_confidence_power: float = 1.0
+
     def validate(self) -> "TranslationConfig":
         from persian_sea.alignment_sources import AlignmentSourceSettings
 
@@ -96,6 +112,35 @@ class TranslationConfig:
             raise ValueError("Invalid optimization settings")
         if self.strict_signer and not self.signer_metadata:
             raise ValueError("strict_signer=True requires signer_metadata CSV")
+
+        if not isinstance(self.ota_enabled, bool) or not isinstance(self.tpa_enabled, bool):
+            raise ValueError("ota_enabled and tpa_enabled must be boolean")
+        if not isinstance(self.ota_detach_text, bool):
+            raise ValueError("ota_detach_text must be boolean")
+        for name in (
+            "ota_weight",
+            "ota_epsilon",
+            "ota_dustbin_cost",
+            "ota_temporal_weight",
+            "tpa_weight",
+            "tpa_temperature",
+            "tpa_confidence_power",
+        ):
+            value = float(getattr(self, name))
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and nonnegative")
+        if self.ota_epsilon <= 0:
+            raise ValueError("ota_epsilon must be positive")
+        if self.ota_dustbin_cost <= 0:
+            raise ValueError("ota_dustbin_cost must be positive")
+        if self.ota_iterations < 1:
+            raise ValueError("ota_iterations must be >= 1")
+        if self.ota_enabled and self.ota_weight <= 0:
+            raise ValueError("ota_enabled=True requires ota_weight > 0")
+        if self.tpa_enabled and self.tpa_weight <= 0:
+            raise ValueError("tpa_enabled=True requires tpa_weight > 0")
+        if self.tpa_temperature <= 0:
+            raise ValueError("tpa_temperature must be positive")
         return self
 
 

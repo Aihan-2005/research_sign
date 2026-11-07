@@ -34,8 +34,8 @@ class VisualCacheLRU:
         if key not in self.cache:
             with np.load(path, allow_pickle=False) as archive:
                 data = {
-                    key: np.asarray(archive[key])
-                    for key in ("pose", "rgb", "starts", "ends")
+                    name: np.asarray(archive[name])
+                    for name in ("pose", "rgb", "starts", "ends")
                 }
             validate_cache(data, path)
             self.cache[key] = data
@@ -61,7 +61,7 @@ def validate_cache(d: dict, path: Path | str = "cache") -> None:
         or rgb.ndim != 4
         or rgb.shape[0] != count
         or pose.shape[1] != rgb.shape[1]
-        or not all(np.isfinite(x).all() for x in (pose, rgb, starts, ends))
+        or not all(np.isfinite(value).all() for value in (pose, rgb, starts, ends))
         or np.any(starts < 0)
         or np.any(ends <= starts)
         or np.any(np.diff(starts) < 0)
@@ -117,7 +117,6 @@ class TranslationCueDataset(Dataset):
                     require_alignment_review=cfg.require_alignment_review,
                 ),
             )
-
 
             offset = resolve_offset(
                 video_id,
@@ -210,19 +209,23 @@ def collate(
     ends = torch.zeros(batch_size, max_segments, dtype=torch.float32)
     mask = torch.zeros(batch_size, max_segments, dtype=torch.bool)
 
-    for i, row in enumerate(batch):
+    for index, row in enumerate(batch):
         count = len(row["starts"])
         if (
             row["pose"].shape[1:] != (frames, joints, channels)
             or row["rgb"].shape[1:] != (frames, views, dim)
         ):
             raise ValueError("Inconsistent visual dimensions across examples")
-        pose[i, :count], rgb[i, :count] = row["pose"], row["rgb"]
-        starts[i, :count], ends[i, :count] = row["starts"], row["ends"]
-        mask[i, :count] = True
+        pose[index, :count], rgb[index, :count] = row["pose"], row["rgb"]
+        starts[index, :count], ends[index, :count] = row["starts"], row["ends"]
+        mask[index, :count] = True
 
     output = {
-        "pose": pose, "rgb": rgb, "starts": starts, "ends": ends, "mask": mask
+        "pose": pose,
+        "rgb": rgb,
+        "starts": starts,
+        "ends": ends,
+        "mask": mask,
     }
     if include_targets:
         texts = [row["text"] for row in batch]
@@ -242,8 +245,24 @@ def collate(
                 max_length=max_target_tokens,
                 return_tensors="pt",
             )
-        labels = encoded["input_ids"].clone()
-        labels[encoded["attention_mask"] == 0] = -100
+
+        target_ids = encoded["input_ids"].long()
+        target_attention_mask = encoded["attention_mask"].long()
+        labels = target_ids.clone()
+        labels[target_attention_mask == 0] = -100
+
+
+        content_mask = target_attention_mask.bool().clone()
+        special_ids = {
+            int(token_id)
+            for token_id in (getattr(tokenizer, "all_special_ids", None) or [])
+        }
+        for token_id in special_ids:
+            content_mask &= target_ids.ne(token_id)
+
         output["labels"] = labels
+        output["target_input_ids"] = target_ids
+        output["target_attention_mask"] = target_attention_mask
+        output["target_content_mask"] = content_mask
         output["text"] = texts
     return output
