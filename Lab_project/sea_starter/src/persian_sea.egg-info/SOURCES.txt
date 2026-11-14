@@ -20,6 +20,7 @@ src/persian_sea/alignment/dp.py
 src/persian_sea/alignment/pipeline.py
 src/persian_sea/alignment/quality_gate.py
 src/persian_sea/alignment/semantic_dp.py
+src/persian_sea/alignment/signshift_prior.py
 src/persian_sea/alignment/timing_policy.py
 src/persian_sea/cli/align.py
 src/persian_sea/cli/align_semantic.py
@@ -141,6 +142,7 @@ tests/test_sampling.py
 tests/test_semantic_dp_module_name.py
 tests/test_signshift_boundary_integration.py
 tests/test_signshift_phase3.py
+tests/test_signshift_sea_integration.py
 tests/test_stage3_preprocessing.py
 tests/test_stage4_modular_learning.py
 tests/test_stage5_diagnostics.py
