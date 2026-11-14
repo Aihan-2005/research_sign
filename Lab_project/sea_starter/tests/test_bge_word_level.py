@@ -16,3 +16,5 @@ def test_complete_word_can_have_multiple_subwords():
     assert BGEM3DenseExtractor._complete_word_token_indices(
         0, 5, [(0, 2), (2, 5), (0, 0)]
     ) == [0, 1]
+
+c

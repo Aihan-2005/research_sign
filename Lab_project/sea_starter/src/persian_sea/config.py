@@ -1,207 +1,181 @@
 from __future__ import annotations
-from dataclasses import dataclass
+
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+import math
+
 import yaml
 
 
 @dataclass(frozen=True)
-class PathsConfig:
-    videos: Path
-    poses: Path
-    subtitles_raw: Path
-    subtitles_gt: Path
-    segmentation_gt: Path
-    video_ids: Path
-    train_video_ids: Path
-    val_video_ids: Path
-    test_video_ids: Path
-    segmentation_output: Path
-    alignment_output: Path
-    reports: Path
-    feature_cache: Path
-    text_feature_cache: Path
-    checkpoints: Path
+class VideoTextConfig:
+    train_ids: str = "data/train_ids.txt"
+    val_ids: str = "data/val_ids.txt"
+    test_ids: str = "data/test_ids.txt"
+    subtitles_dir: str = "data/subtitles_raw"
+    approved_subtitles_dir: str = "data/subtitles_approved"
+    feature_cache_dir: str = "outputs/features"
+    text_cache_dir: str = "outputs/text_features"
+    output_dir: str = "outputs/video_text"
+    pair_source: str = "raw"
+    sea_alignment_dir: str = "outputs/aligned_subtitles"
+    semantic_alignment_dir: str = "outputs/aligned_subtitles/semantic"
+    max_alignment_shift_seconds: float = 0.0
+    require_alignment_review: bool = False
+
+    visual_backend: str = "pose_rgb"
+    embedding_dim: int = 256
+    model_dim: int = 384
+    temporal_layers: int = 1
+    temporal_heads: int = 4
+    visual_microbatch: int = 8
+    candidate_margin_seconds: float = 4.0
+    min_candidate_segments: int = 4
+    max_candidate_segments: int = 24
+    span_sizes: tuple[int, ...] = (1, 2, 4, 8)
+    span_pooling: str = "mean"
 
 
-@dataclass(frozen=True)
-class PoseConfig:
-    format: str = "mediapipe"
-    num_workers: int = 1
-    model_complexity: int = 2
-    smooth_landmarks: bool = False
-    refine_face_landmarks: bool = True
-    overwrite: bool = False
-
-
-@dataclass(frozen=True)
-class ElanConfig:
-    sign_tiers: List[str]
-    gt_sign_tiers: List[str]
-    aligned_subtitle_tier: str = "SUBTITLE_SHIFTED"
-
-
-@dataclass(frozen=True)
-class SegmentationConfig:
-    model: str = "model_E4s-1.pth"
-    sign_b_threshold: int = 30
-    sign_o_threshold: int = 50
-    overwrite: bool = False
-
-
-@dataclass(frozen=True)
-class SegmentationEvalConfig:
-    iou_thresholds: List[float]
-    boundary_tolerance_ms: List[int]
-    tune_b_values: List[int]
-    tune_o_values: List[int]
-    primary_iou_threshold: float = 0.50
-
-
-@dataclass(frozen=True)
-class ScannerConfig:
-    rgb_model: str = "facebook/dinov2-base"
-    device: str = "auto"
-    amp: bool = True
-    rgb_batch_size: int = 32
-    samples_per_segment: int = 8
-    views: List[str] | None = None
-    hand_padding: float = 2.0
-    face_padding: float = 1.55
-    signer_padding: float = 1.20
-    local_fallback_to_signer: bool = True
-    pose_include_confidence: bool = True
-    pose_shoulder_epsilon: float = 0.02
-    cache_dtype: str = "float16"
-    overwrite: bool = False
-
-    def resolved_views(self) -> list[str]:
-        return self.views or ["signer", "left_hand", "right_hand", "face"]
-
-
-@dataclass(frozen=True)
-class SemanticConfig:
-    text_model: str = "BAAI/bge-m3"
-    text_backend: str = "bge_m3"
-    text_cache_layout: str = "legacy"
+    text_representation: str = "sentence"
+    text_backend: str = ""
+    text_model: str = ""
     text_instruction: str = ""
     text_revision: str = "main"
-    text_device: str = "auto"
-    text_amp: bool = True
-    text_batch_size: int = 16
     text_max_length: int = 256
-    text_cache_dtype: str = "float16"
-    overwrite_text_cache: bool = False
-    embedding_dim: int = 512
-    visual_backend: str = "pose_rgb"
-    search_radius_seconds: float = 6.0
-    min_candidate_segments: int = 8
-    max_candidate_segments: int = 48
-    max_span_segments: int = 16
-    max_span_seconds: float = 14.0
-    align_temperature: float = 0.07
-    temporal_prior_weight: float = 0.35
-    temporal_sigma_seconds: float = 3.0
-    duration_prior_weight: float = 0.25
+    require_text_cache_metadata: bool = False
+
+    sentence_loss_weight: float = 1.0
+    word_loss_weight: float = 1.0
+    word_ot_epsilon: float = 0.05
+    word_ot_iterations: int = 30
+    word_ot_dustbin_score: float = 0.0
+    word_eval_query_chunk: int = 8
+
     mil_temperature: float = 0.10
     contrastive_temperature: float = 0.07
-    supervised_iou_temperature: float = 0.10
-    global_top_k: int = 8
-    global_decoder: str = "monotonic_dp"
-    overlap_penalty: float = 2.0
-    gap_change_penalty: float = 0.15
-
-
-@dataclass(frozen=True)
-class TrainingConfig:
-    device: str = "auto"
-    amp: bool = True
-    seed: int = 42
-    batch_size: int = 8
+    batch_size: int = 4
+    learning_rate: float = 1e-4
+    weight_decay: float = 0.01
+    epochs: int = 8
+    max_train_steps: int = 0
+    val_max_samples: int = 128
     num_workers: int = 0
-    epochs: int = 20
-    learning_rate: float = 2e-4
-    weight_decay: float = 1e-2
+    amp: bool = True
     grad_clip_norm: float = 1.0
-    contrastive_weight: float = 1.0
-    supervised_weight: float = 1.0
-    save_name: str = "semantic_aligner.pt"
+    seed: int = 42
+    checkpoint_name: str = "best_video_text.pt"
+    minimum_videos_per_batch: int = 2
+
+    subtitle_to_sign_offset_seconds: float = 0.0
+    subtitle_offsets_by_video: dict[str, float] = field(default_factory=dict)
+
+    def get_subtitle_offset(self, video_id: str) -> float:
+        value = self.subtitle_offsets_by_video.get(
+            video_id, self.subtitle_to_sign_offset_seconds
+        )
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError(f"Non-finite subtitle offset for {video_id}: {value}")
+        return value
+
+    def validate(self):
+        if self.span_pooling not in {"mean", "attentive"}:
+            raise ValueError("span_pooling must be mean or attentive")
+        if self.text_representation not in {"sentence", "word", "both"}:
+            raise ValueError("text_representation must be sentence, word, or both")
+        if self.text_max_length < 2:
+            raise ValueError("text_max_length must be >= 2")
+        if not self.text_revision:
+            raise ValueError("text_revision must be nonempty")
+
+        if self.require_text_cache_metadata and (
+            not self.text_backend or not self.text_model
+        ):
+            raise ValueError(
+                "Strict text cache metadata needs text_backend and text_model"
+            )
+
+        needs_words = self.text_representation in {"word", "both"}
+        if needs_words:
+            if self.text_backend != "bge_m3":
+                raise ValueError(
+                    "Word-level and both modes currently require text_backend=bge_m3"
+                )
+            if not self.text_model:
+                raise ValueError("Word-level mode requires text_model")
+            if not self.require_text_cache_metadata:
+                raise ValueError(
+                    "Word-level mode requires require_text_cache_metadata=true "
+                    "to reject stale sentence-only caches"
+                )
+
+        if self.sentence_loss_weight < 0 or self.word_loss_weight < 0:
+            raise ValueError("Sentence/word loss weights cannot be negative")
+        if self.text_representation in {"sentence", "both"} and self.sentence_loss_weight <= 0:
+            raise ValueError("sentence_loss_weight must be positive in sentence/both mode")
+        if self.text_representation in {"word", "both"} and self.word_loss_weight <= 0:
+            raise ValueError("word_loss_weight must be positive in word/both mode")
+        if not math.isfinite(float(self.word_ot_epsilon)) or self.word_ot_epsilon <= 0:
+            raise ValueError("word_ot_epsilon must be finite and positive")
+        if self.word_ot_iterations < 1:
+            raise ValueError("word_ot_iterations must be >= 1")
+        if (
+            not math.isfinite(float(self.word_ot_dustbin_score))
+            or not -1.0 <= self.word_ot_dustbin_score <= 1.0
+        ):
+            raise ValueError("word_ot_dustbin_score must be in [-1, 1]")
+        if self.word_eval_query_chunk < 1:
+            raise ValueError("word_eval_query_chunk must be positive")
+
+        from persian_sea.alignment_sources import AlignmentSourceSettings
+        AlignmentSourceSettings(
+            mode=self.pair_source,
+            approved_dir=self.approved_subtitles_dir,
+            sea_dir=self.sea_alignment_dir,
+            semantic_dir=self.semantic_alignment_dir,
+            max_shift_seconds=self.max_alignment_shift_seconds,
+            require_alignment_review=self.require_alignment_review,
+        ).validate()
+
+        if not isinstance(self.require_alignment_review, bool):
+            raise ValueError("require_alignment_review must be boolean")
+        if not (
+            self.embedding_dim > 0
+            and self.temporal_layers >= 0
+            and self.temporal_heads > 0
+            and self.embedding_dim % self.temporal_heads == 0
+        ):
+            raise ValueError("Bad temporal encoder configuration")
+        if not (0 < self.min_candidate_segments <= self.max_candidate_segments):
+            raise ValueError("Invalid candidate segment limits")
+        if self.candidate_margin_seconds < 0 or any(k <= 0 for k in self.span_sizes):
+            raise ValueError("Invalid margin or span_sizes")
+        if self.batch_size < self.minimum_videos_per_batch or self.visual_microbatch < 1:
+            raise ValueError("Batch must contain at least two distinct videos")
+        if not (self.mil_temperature > 0 and self.contrastive_temperature > 0):
+            raise ValueError("Temperatures must be positive")
+        if self.epochs < 1 or self.val_max_samples < 1:
+            raise ValueError("Invalid epochs or validation sample limit")
+        if not math.isfinite(float(self.subtitle_to_sign_offset_seconds)):
+            raise ValueError("subtitle_to_sign_offset_seconds must be finite")
+        if not isinstance(self.subtitle_offsets_by_video, dict):
+            raise ValueError("subtitle_offsets_by_video must be a mapping")
+        for video_id, offset in self.subtitle_offsets_by_video.items():
+            if not isinstance(video_id, str) or not video_id.strip():
+                raise ValueError("Per-video offset keys must be nonempty video IDs")
+            if not isinstance(offset, (int, float)) or not math.isfinite(float(offset)):
+                raise ValueError(f"Invalid per-video subtitle offset: {video_id}={offset!r}")
+        return self
 
 
-@dataclass(frozen=True)
-class AlignmentConfig:
-    duration_penalty_weight: float = 1.0
-    gap_penalty_weight: float = 5.0
-    max_gap_seconds: float = 10.0
-    candidate_window_size: int = 50
-    pre_shift_start_seconds: float = 0.0
-    pre_shift_end_seconds: float = 0.0
-    post_shift_start_seconds: float = 0.0
-    post_shift_end_seconds: float = 0.0
-    similarity_weight: float = 0.0
-    # Experimental null/abstention path. Disabled to preserve baseline behavior.
-    allow_null_alignment: bool = False
-    null_alignment_penalty: float = 30.0
-    write_updated_eaf: bool = True
-    overwrite: bool = False
-    backend: str = "sea_temporal"
-    sign_eaf_dir: str | None = None
-    max_boundary_shift_seconds: float = 1.5
-    auto_apply_small_shifts: bool = False
-
-
-@dataclass(frozen=True)
-class AppConfig:
-    paths: PathsConfig
-    pose: PoseConfig
-    elan: ElanConfig
-    segmentation: SegmentationConfig
-    segmentation_eval: SegmentationEvalConfig
-    scanner: ScannerConfig
-    semantic: SemanticConfig
-    training: TrainingConfig
-    alignment: AlignmentConfig
-
-
-def _pathify(raw: dict) -> PathsConfig:
-    return PathsConfig(**{k: Path(v) for k, v in raw.items()})
-
-
-def load_config(path: str | Path) -> AppConfig:
-    with Path(path).open("r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
+def read_config(path: str | Path) -> VideoTextConfig:
+    p = Path(path)
+    raw = yaml.safe_load(p.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
-        raise ValueError("Config YAML must be a mapping")
-    return AppConfig(
-        paths=_pathify(raw["paths"]),
-        pose=PoseConfig(**raw.get("pose", {})),
-        elan=ElanConfig(**raw["elan"]),
-        segmentation=SegmentationConfig(**raw.get("segmentation", {})),
-        segmentation_eval=SegmentationEvalConfig(**raw["segmentation_eval"]),
-        scanner=ScannerConfig(**raw.get("scanner", {})),
-        semantic=SemanticConfig(**raw.get("semantic", {})),
-        training=TrainingConfig(**raw.get("training", {})),
-        alignment=AlignmentConfig(**raw.get("alignment", {})),
-    )
-
-
-def read_video_ids(path: Path) -> list[str]:
-    if not path.exists():
-        raise FileNotFoundError(path)
-    return [x.strip() for x in path.read_text(encoding="utf-8").splitlines()
-            if x.strip() and not x.lstrip().startswith("#")]
-
-
-def model_tag(model: str) -> str:
-    stem = Path(model).stem
-    return stem[len("model_"):] if stem.startswith("model_") else stem
-
-
-def segmentation_run_name(model: str, b: int, o: int) -> str:
-    return f"{model_tag(model)}_{b}_{o}"
-
-
-def segmentation_subdir(cfg: AppConfig) -> Path:
-    s = cfg.segmentation
-    return cfg.paths.segmentation_output / segmentation_run_name(
-        s.model, s.sign_b_threshold, s.sign_o_threshold)
+        raise ValueError("YAML must be a mapping")
+    unknown = set(raw) - set(VideoTextConfig.__dataclass_fields__)
+    if unknown:
+        raise ValueError(f"Unknown video_text config keys: {sorted(unknown)}")
+    if "span_sizes" in raw:
+        raw["span_sizes"] = tuple(raw["span_sizes"])
+    return VideoTextConfig(**raw).validate()

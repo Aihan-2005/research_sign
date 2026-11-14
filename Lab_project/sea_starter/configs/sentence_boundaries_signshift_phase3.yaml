@@ -1,0 +1,53 @@
+
+train_ids: data/train_ids.txt
+val_ids: data/val_ids.txt
+test_ids: data/test_ids.txt
+subtitles_dir: data/subtitles_raw
+pair_source: raw
+approved_subtitles_dir: data/subtitles_approved
+sea_alignment_dir: outputs/aligned_subtitles/sea_semantic_vlp
+semantic_alignment_dir: outputs/aligned_subtitles/semantic
+require_alignment_review: false
+max_alignment_shift_seconds: 0.0
+subtitle_to_sign_offset_seconds: 0.0
+subtitle_offsets_by_video: {}
+
+
+visual_cache_dir: outputs/features
+feature_dir: outputs/boundary_features_signshift
+vlp_checkpoint: outputs/video_text/pretrain_first/best_video_text.pt
+output_dir: outputs/sentence_boundaries_signshift_phase3
+
+hidden_dim: 256
+num_layers: 2
+num_heads: 4
+dropout: 0.1
+learning_rate: 0.0003
+weight_decay: 0.01
+epochs: 20
+patience: 5
+threshold: 0.35
+min_sentence_segments: 2
+max_sentence_segments: 32
+feature_batch_size: 32
+positive_weight_cap: 30.0
+max_train_videos: 0
+seed: 42
+
+
+use_tdm: true
+tdm_offsets: [1, 2, 4, 8]
+
+
+use_multistream: true
+
+
+use_scp: true
+max_sentence_count: 128
+scp_conv_layers: 4
+scp_sigma: 1.0
+scp_loss_weight: 0.10
+smooth_loss_weight: 0.15
+
+
+validation_reference_dir: ""

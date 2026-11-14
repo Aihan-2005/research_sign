@@ -20,6 +20,17 @@ from persian_sea.alignment.timing_policy import resolve_offset, shift_cues
 from persian_sea.translation.data import VisualCacheLRU, load_ids
 from persian_sea.video_text.config import VideoTextConfig
 from persian_sea.video_text.model import VideoTextModel
+from persian_sea.translation.signshift import (
+    STREAM_NAMES,
+    MultiScaleTemporalDifference,
+    LocalStreamFusion,
+    SegmentCountHead,
+    count_kl_loss,
+    temporal_smoothness_loss,
+    decode_count_constrained,
+    sentence_segmentation_metrics,
+    aggregate_sentence_metrics,
+)
 
 
 @dataclass(frozen=True)
@@ -56,6 +67,20 @@ class BoundaryConfig:
     positive_weight_cap: float = 30.0
     max_train_videos: int = 0
     seed: int = 42
+
+    # SignShift-inspired enhancements; all disabled for legacy checkpoints.
+    use_tdm: bool = False
+    use_multistream: bool = False
+    use_scp: bool = False
+    tdm_offsets: tuple[int, ...] = (1, 2, 4, 8)
+    max_sentence_count: int = 128
+    scp_conv_layers: int = 4
+    scp_sigma: float = 1.0
+    scp_loss_weight: float = 0.10
+    smooth_loss_weight: float = 0.15
+
+    # Optional independently reviewed boundaries for honest validation metrics.
+    validation_reference_dir: str = ""
 
     def validate(self) -> "BoundaryConfig":
         AlignmentSourceSettings(
@@ -94,6 +119,26 @@ class BoundaryConfig:
             raise ValueError("Invalid feature batch size / positive weight cap")
         if self.max_train_videos < 0:
             raise ValueError("max_train_videos cannot be negative")
+        if any(not isinstance(getattr(self, field), bool) for field in (
+            "use_tdm", "use_multistream", "use_scp"
+        )):
+            raise ValueError("use_tdm/use_multistream/use_scp must be booleans")
+        if self.use_multistream and not self.use_tdm:
+            raise ValueError("use_multistream requires use_tdm=true")
+        if not isinstance(self.tdm_offsets, (tuple, list)) or (
+            not self.tdm_offsets or any(not isinstance(d, int) or d < 1
+                                        for d in self.tdm_offsets)
+        ):
+            raise ValueError("tdm_offsets must be positive integer offsets")
+        if self.max_sentence_count < 1 or self.scp_conv_layers < 1:
+            raise ValueError("Invalid SCP size/layers")
+        if not math.isfinite(self.scp_sigma) or self.scp_sigma <= 0:
+            raise ValueError("scp_sigma must be positive")
+        for value in (self.scp_loss_weight, self.smooth_loss_weight):
+            if not math.isfinite(value) or value < 0:
+                raise ValueError("SCP and smoothness weights must be nonnegative")
+        if self.use_scp and self.scp_loss_weight <= 0:
+            raise ValueError("use_scp=true requires positive scp_loss_weight")
         return self
 
 
@@ -104,6 +149,8 @@ def read_boundary_config(path: str | Path) -> BoundaryConfig:
     unknown = set(raw) - set(BoundaryConfig.__dataclass_fields__)
     if unknown:
         raise ValueError(f"Unknown boundary config keys: {sorted(unknown)}")
+    if "tdm_offsets" in raw:
+        raw["tdm_offsets"] = tuple(raw["tdm_offsets"])
     return BoundaryConfig(**raw).validate()
 
 
@@ -148,7 +195,8 @@ def load_vlp_model(checkpoint: str | Path, device: torch.device):
 
 
 def _valid_feature_cache(
-    path: Path, source_path: Path, vlp_hash: str, video_id: str
+    path: Path, source_path: Path, vlp_hash: str, video_id: str,
+    require_local_streams: bool = False,
 ) -> dict | None:
     if not path.is_file():
         return None
@@ -166,12 +214,26 @@ def _valid_feature_cache(
                 key: np.asarray(archive[key])
                 for key in ("features", "starts", "ends")
             }
+            if require_local_streams:
+                if not all(name in archive for name in STREAM_NAMES):
+                    # Force regeneration of v1 caches when using multi-stream.
+                    return None
+                for name in STREAM_NAMES:
+                    result[name] = np.asarray(archive[name])
         if (
             result["features"].ndim != 2
             or len(result["features"]) != len(result["starts"])
             or len(result["starts"]) != len(result["ends"])
             or not all(np.isfinite(result[key]).all() for key in result)
             or np.any(result["ends"] <= result["starts"])
+            or (
+                require_local_streams and any(
+                    result[name].ndim != 2
+                    or len(result[name]) != len(result["features"])
+                    or result[name].shape[1] < 1
+                    for name in STREAM_NAMES
+                )
+            )
         ):
             return None
         return result
@@ -187,6 +249,7 @@ def extract_segment_features(
     vlp_hash: str,
     device: torch.device,
     batch_size: int = 32,
+    include_local_views: bool = False,
 ) -> dict[str, np.ndarray]:
     source = Path(visual_cache_dir) / f"{video_id}.npz"
     if not source.is_file():
@@ -194,7 +257,10 @@ def extract_segment_features(
     dest_dir = Path(feature_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{video_id}.npz"
-    cached = _valid_feature_cache(dest, source, vlp_hash, video_id)
+    cached = _valid_feature_cache(
+        dest, source, vlp_hash, video_id,
+        require_local_streams=include_local_views,
+    )
     if cached is not None:
         return cached
 
@@ -224,6 +290,43 @@ def extract_segment_features(
     matrix = np.concatenate(features, axis=0).astype(np.float32, copy=False)
     if len(matrix) != len(visual["starts"]) or not np.isfinite(matrix).all():
         raise ValueError(f"Invalid extracted segment features for {video_id}")
+
+    stream_features = {}
+    if include_local_views:
+        # Existing DINOv2 cache: RGB [sign_segments, frames, views, dim].
+        # Do not guess positions: metadata views determines the mapping.
+        with np.load(source, allow_pickle=False) as archive:
+            if "views" not in archive:
+                raise ValueError(
+                    f"Cannot enable multi-stream: {source} lacks 'views' metadata; "
+                    "rescan RGB+Pose"
+                )
+            view_names = [str(x) for x in archive["views"].tolist()]
+        required = ("signer", "left_hand", "right_hand", "face")
+        missing = sorted(set(required) - set(view_names))
+        if missing:
+            raise ValueError(
+                f"Cannot enable multi-stream for {video_id}; missing views {missing}. "
+                "Enable signer,left_hand,right_hand,face and regenerate visual cache"
+            )
+        rgb_np = np.asarray(rgb)
+        if rgb_np.ndim != 4 or rgb_np.shape[2] != len(view_names):
+            raise ValueError("RGB view metadata/cache shape mismatch")
+
+        def view_embedding(view_name):
+            # Average frozen per-frame view embeddings for one sign segment.
+            return rgb_np[:, :, view_names.index(view_name), :].mean(
+                axis=1, dtype=np.float32
+            )
+
+        stream_features = {
+            "signer": view_embedding("signer"),
+            "hands": (view_embedding("left_hand")
+                      + view_embedding("right_hand")) * 0.5,
+            "face": view_embedding("face"),
+        }
+        if any(not np.isfinite(x).all() for x in stream_features.values()):
+            raise ValueError("Nonfinite cached DINO face/hand/signer vectors")
     stat = source.stat()
     temp = dest.with_name(dest.name + ".tmp")
     try:
@@ -237,6 +340,7 @@ def extract_segment_features(
                 source_size=np.asarray(stat.st_size, dtype=np.int64),
                 source_mtime_ns=np.asarray(stat.st_mtime_ns, dtype=np.int64),
                 video_id=np.asarray(video_id),
+                **stream_features,
             )
         os.replace(temp, dest)
     finally:
@@ -245,6 +349,7 @@ def extract_segment_features(
         "features": matrix,
         "starts": visual["starts"],
         "ends": visual["ends"],
+        **stream_features,
     }
 
 
@@ -316,12 +421,37 @@ class SentenceBoundaryHead(nn.Module):
         num_layers: int = 2,
         num_heads: int = 4,
         dropout: float = 0.1,
+        *,
+        use_tdm: bool = False,
+        use_multistream: bool = False,
+        use_scp: bool = False,
+        local_dim: int = 0,
+        tdm_offsets: tuple[int, ...] = (1, 2, 4, 8),
+        max_sentence_count: int = 128,
+        scp_conv_layers: int = 4,
     ):
         super().__init__()
         if input_dim < 1 or hidden_dim < 8 or hidden_dim % num_heads:
             raise ValueError("Invalid boundary-head dimensions")
         self.input_dim = int(input_dim)
         self.hidden_dim = int(hidden_dim)
+        self.use_tdm = bool(use_tdm)
+        self.use_multistream = bool(use_multistream)
+        self.use_scp = bool(use_scp)
+        if self.use_multistream and not self.use_tdm:
+            raise ValueError("Multi-stream fusion needs TDM")
+        self.global_tdm = (
+            MultiScaleTemporalDifference(hidden_dim, tuple(tdm_offsets), dropout)
+            if self.use_tdm else None
+        )
+        self.local_fusion = (
+            LocalStreamFusion(local_dim, hidden_dim, tuple(tdm_offsets), dropout)
+            if self.use_multistream else None
+        )
+        self.scp = (
+            SegmentCountHead(hidden_dim, max_sentence_count, scp_conv_layers, dropout)
+            if self.use_scp else None
+        )
         self.input_projection = nn.Sequential(
             nn.Linear(input_dim + 2, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -343,8 +473,11 @@ class SentenceBoundaryHead(nn.Module):
         self.end_head = nn.Linear(hidden_dim, 1)
 
     def forward(
-        self, features: torch.Tensor, starts: torch.Tensor, ends: torch.Tensor
-    ) -> torch.Tensor:
+        self, features: torch.Tensor, starts: torch.Tensor,
+        ends: torch.Tensor, *,
+        streams: dict[str, torch.Tensor] | None = None,
+        return_aux: bool = False,
+    ) -> torch.Tensor | dict:
         if features.ndim != 2 or features.shape[1] != self.input_dim:
             raise ValueError(f"Expected [N,{self.input_dim}] segment features")
         if starts.shape != (features.shape[0],) or ends.shape != starts.shape:
@@ -361,15 +494,25 @@ class SentenceBoundaryHead(nn.Module):
         hidden = self.input_projection(
             torch.cat([features.float(), timing.float()], dim=-1)
         )
+        if self.global_tdm is not None:
+            hidden = self.global_tdm(hidden)
+        if self.local_fusion is not None:
+            hidden = self.local_fusion(hidden, streams)
         hidden = hidden + sinusoidal_position_encoding(
             len(hidden), self.hidden_dim, hidden.device, hidden.dtype
         )
         hidden = self.norm(
             self.temporal(hidden.unsqueeze(0)).squeeze(0)
         )
-        return torch.cat(
+        logits = torch.cat(
             [self.start_head(hidden), self.end_head(hidden)], dim=-1
         )
+        if not return_aux:
+            return logits  # old API and old checkpoint semantics
+        return {
+            "boundary_logits": logits,
+            "count_logits": self.scp(hidden) if self.scp is not None else None,
+        }
 
 
 def threshold_peaks(
@@ -514,6 +657,7 @@ def _load_record(
         data = extract_segment_features(
             video_id, model, cfg.visual_cache_dir, cfg.feature_dir,
             vlp_hash, device, cfg.feature_batch_size,
+            include_local_views=cfg.use_multistream,
         )
     else:
         path = Path(cfg.feature_dir) / f"{video_id}.npz"
@@ -524,9 +668,11 @@ def _load_record(
                 raise ValueError(
                     f"Feature cache was made with a different VLP checkpoint: {path}"
                 )
+            required = ("features", "starts", "ends") + (
+                STREAM_NAMES if cfg.use_multistream else ()
+            )
             data = {
-                key: np.asarray(archive[key])
-                for key in ("features", "starts", "ends")
+                key: np.asarray(archive[key]) for key in required
             }
 
     subtitle = find_subtitle(Path(cfg.subtitles_dir), video_id)
@@ -565,6 +711,10 @@ def _load_record(
         **data,
         "labels": labels,
         "valid_cues": valid_cues,
+        "reference_intervals": [
+            (float(cue.start), float(cue.end)) for cue in target_cues
+            if cue.text.strip() and cue.end > cue.start
+        ],
     }
 
 
@@ -618,9 +768,12 @@ def _evaluate(
     records: list[dict],
     device: torch.device,
     threshold: float,
+    cfg: BoundaryConfig | None = None,
 ) -> dict:
     model.eval()
     starts_stats, ends_stats = [], []
+    sentence_scores = []
+    scp_count_errors = []
     with torch.inference_mode():
         for row in records:
             features = torch.as_tensor(
@@ -632,20 +785,45 @@ def _evaluate(
             ends = torch.as_tensor(
                 row["ends"], dtype=torch.float32, device=device
             )
-            logits = model(features, starts, ends).sigmoid().cpu().numpy()
+            streams = _to_device_streams(row, device) if cfg and cfg.use_multistream else None
+            output = model(features, starts, ends, streams=streams, return_aux=True)
+            logits = output["boundary_logits"].sigmoid().cpu().numpy()
             starts_stats.append(
                 _event_metrics(logits[:, 0], row["labels"][:, 0], threshold)
             )
             ends_stats.append(
                 _event_metrics(logits[:, 1], row["labels"][:, 1], threshold)
             )
+            if cfg is not None:
+                windows, info = _predict_from_probabilities(
+                    logits, output["count_logits"], row, cfg
+                )
+                reference = row["reference_intervals"]
+                if cfg.validation_reference_dir:
+                    path = find_subtitle(Path(cfg.validation_reference_dir), row["video_id"])
+                    if path is None:
+                        raise FileNotFoundError(
+                            "Validation reference missing; these metrics require "
+                            f"verified sentence boundaries: {row['video_id']}"
+                        )
+                    reference = [
+                        (float(cue.start), float(cue.end))
+                        for cue in read_subtitles(path) if cue.text.strip()
+                    ]
+                sentence_scores.append(sentence_segmentation_metrics(
+                    [(w["start"], w["end"]) for w in windows], reference
+                ))
+                if info is not None:
+                    scp_count_errors.append(
+                        abs(info.predicted_count - len(reference))
+                    )
 
     def mean(key, rows):
         return float(np.mean([row[key] for row in rows])) if rows else 0.0
 
     start_f1 = mean("f1", starts_stats)
     end_f1 = mean("f1", ends_stats)
-    return {
+    summary = {
         "start_precision": mean("precision", starts_stats),
         "start_recall": mean("recall", starts_stats),
         "start_f1": start_f1,
@@ -655,6 +833,20 @@ def _evaluate(
         "macro_boundary_f1": (start_f1 + end_f1) / 2.0,
         "videos": len(records),
     }
+    if sentence_scores:
+        label = "verified" if cfg and cfg.validation_reference_dir else "weak"
+        summary.update({
+            f"{label}_{key}": value
+            for key, value in aggregate_sentence_metrics(sentence_scores).items()
+            if key != "videos"
+        })
+        if scp_count_errors:
+            summary[f"{label}_scp_count_mae"] = float(np.mean(scp_count_errors))
+        summary["sentence_metric_reference"] = (
+            "independently_reviewed_vtt" if label == "verified"
+            else "training_subtitle_timestamps_WEAK_NOT_GROUND_TRUTH"
+        )
+    return summary
 
 
 def train_boundary_detector(cfg: BoundaryConfig) -> Path:
@@ -673,6 +865,12 @@ def train_boundary_detector(cfg: BoundaryConfig) -> Path:
             f"{len(val_ids)} validation videos"
         )
 
+    if cfg.use_scp and not cfg.validation_reference_dir:
+        warnings.warn(
+            "SCP counts and sentence-level validation metrics use approx. subtitle "
+            "cues as weak supervision; set validation_reference_dir for "
+            "independently verified GT before reporting scientific scores."
+        )
     if len(train_ids) < 2 or len(val_ids) < 1:
         raise ValueError(
             "Boundary training needs >=2 train videos and >=1 validation video"
@@ -732,8 +930,23 @@ def train_boundary_detector(cfg: BoundaryConfig) -> Path:
     pos_weight_t = torch.as_tensor(
         pos_weight, dtype=torch.float32, device=device
     )
+    stream_dim = (
+        int(train_records[0]["signer"].shape[1]) if cfg.use_multistream else 0
+    )
+    if cfg.use_multistream and any(
+        row[name].shape != (len(row["features"]), stream_dim)
+        for row in all_records.values() for name in STREAM_NAMES
+    ):
+        raise ValueError("Inconsistent local stream dimensions across videos")
     model = SentenceBoundaryHead(
-        input_dim, cfg.hidden_dim, cfg.num_layers, cfg.num_heads, cfg.dropout
+        input_dim, cfg.hidden_dim, cfg.num_layers, cfg.num_heads, cfg.dropout,
+        use_tdm=cfg.use_tdm,
+        use_multistream=cfg.use_multistream,
+        use_scp=cfg.use_scp,
+        local_dim=stream_dim,
+        tdm_offsets=tuple(cfg.tdm_offsets),
+        max_sentence_count=cfg.max_sentence_count,
+        scp_conv_layers=cfg.scp_conv_layers,
     ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay
@@ -769,8 +982,17 @@ def train_boundary_detector(cfg: BoundaryConfig) -> Path:
                 row["labels"], dtype=torch.float32, device=device
             )
             optimizer.zero_grad(set_to_none=True)
-            logits = model(features, starts, ends)
-            loss = criterion(logits, labels)
+            streams = _to_device_streams(row, device) if cfg.use_multistream else None
+            output = model(features, starts, ends, streams=streams, return_aux=True)
+            logits = output["boundary_logits"]
+            bce = criterion(logits, labels)
+            smooth = temporal_smoothness_loss(logits) if cfg.smooth_loss_weight else bce.new_zeros(())
+            count_loss = (
+                count_kl_loss(output["count_logits"], int(row["valid_cues"]), cfg.scp_sigma)
+                if cfg.use_scp else bce.new_zeros(())
+            )
+            loss = (bce + cfg.smooth_loss_weight * smooth
+                    + cfg.scp_loss_weight * count_loss)
             if not torch.isfinite(loss):
                 raise FloatingPointError(
                     f"Nonfinite boundary loss on {row['video_id']}"
@@ -780,7 +1002,7 @@ def train_boundary_detector(cfg: BoundaryConfig) -> Path:
             optimizer.step()
             losses.append(float(loss.detach().cpu()))
 
-        metrics = _evaluate(model, val_records, device, cfg.threshold)
+        metrics = _evaluate(model, val_records, device, cfg.threshold, cfg)
         history_row = {
             "epoch": epoch,
             "train_loss": float(np.mean(losses)),
@@ -794,10 +1016,11 @@ def train_boundary_detector(cfg: BoundaryConfig) -> Path:
         )
 
         payload = {
-            "schema_version": 1,
+            "schema_version": 2 if (cfg.use_tdm or cfg.use_scp) else 1,
             "model": model.state_dict(),
             "config": asdict(cfg),
             "input_dim": input_dim,
+            "local_dim": stream_dim,
             "hidden_dim": cfg.hidden_dim,
             "num_layers": cfg.num_layers,
             "num_heads": cfg.num_heads,
@@ -810,6 +1033,7 @@ def train_boundary_detector(cfg: BoundaryConfig) -> Path:
             "epoch": epoch,
             "validation": metrics,
             "label_source": "subtitle_timestamps_nearest_segment_center",
+            "count_label_source": "approximately_one_subtitle_cue_per_sentence_WEAK",
             "pair_source": cfg.pair_source,
             "subtitle_to_sign_offset_seconds": float(
                 cfg.subtitle_to_sign_offset_seconds
@@ -824,7 +1048,7 @@ def train_boundary_detector(cfg: BoundaryConfig) -> Path:
         finally:
             temp.unlink(missing_ok=True)
 
-        score = metrics["macro_boundary_f1"]
+        score = metrics.get("verified_f1_50", metrics["macro_boundary_f1"])
         if score > best_score:
             best_score, stale = score, 0
             temp = best_path.with_name(best_path.name + ".tmp")
@@ -861,10 +1085,70 @@ def load_boundary_head(checkpoint: str | Path, device: torch.device):
         cfg.num_layers,
         cfg.num_heads,
         cfg.dropout,
+        use_tdm=cfg.use_tdm,
+        use_multistream=cfg.use_multistream,
+        use_scp=cfg.use_scp,
+        local_dim=int(payload.get("local_dim", 0)),
+        tdm_offsets=tuple(cfg.tdm_offsets),
+        max_sentence_count=cfg.max_sentence_count,
+        scp_conv_layers=cfg.scp_conv_layers,
     )
     model.load_state_dict(payload["model"], strict=True)
     model.to(device).eval()
     return model, cfg, payload
+
+
+def _to_device_streams(record: dict, device: torch.device) -> dict[str, torch.Tensor]:
+    return {
+        key: torch.as_tensor(record[key], dtype=torch.float32, device=device)
+        for key in STREAM_NAMES
+    }
+
+
+def _predict_from_probabilities(
+    probabilities: np.ndarray,
+    count_logits: torch.Tensor | None,
+    record: dict,
+    cfg: BoundaryConfig,
+):
+    if cfg.use_scp:
+        if count_logits is None:
+            raise ValueError("SCP enabled but count logits are absent")
+        windows, info = decode_count_constrained(
+            record["starts"], record["ends"],
+            probabilities[:, 0], probabilities[:, 1],
+            count_logits.detach().cpu().numpy(),
+            min_segments=cfg.min_sentence_segments,
+            max_segments=cfg.max_sentence_segments,
+        )
+        return windows, info
+    return pair_boundary_events(
+        probabilities[:, 0], probabilities[:, 1],
+        record["starts"], record["ends"],
+        threshold=cfg.threshold,
+        min_segments=cfg.min_sentence_segments,
+        max_segments=cfg.max_sentence_segments,
+    ), None
+
+
+@torch.no_grad()
+def predict_windows_with_info(
+    model: SentenceBoundaryHead,
+    record: dict,
+    cfg: BoundaryConfig,
+    device: torch.device,
+):
+    features = torch.as_tensor(
+        record["features"], dtype=torch.float32, device=device
+    )
+    starts = torch.as_tensor(record["starts"], dtype=torch.float32, device=device)
+    ends = torch.as_tensor(record["ends"], dtype=torch.float32, device=device)
+    streams = _to_device_streams(record, device) if cfg.use_multistream else None
+    output = model(features, starts, ends, streams=streams, return_aux=True)
+    probabilities = output["boundary_logits"].sigmoid().cpu().numpy()
+    return _predict_from_probabilities(
+        probabilities, output["count_logits"], record, cfg
+    )
 
 
 def predict_windows(
@@ -873,24 +1157,110 @@ def predict_windows(
     cfg: BoundaryConfig,
     device: torch.device,
 ) -> list[dict]:
-    with torch.inference_mode():
-        features = torch.as_tensor(
-            record["features"], dtype=torch.float32, device=device
-        )
-        starts = torch.as_tensor(
-            record["starts"], dtype=torch.float32, device=device
-        )
-        ends = torch.as_tensor(
-            record["ends"], dtype=torch.float32, device=device
-        )
-        probabilities = model(features, starts, ends).sigmoid().cpu().numpy()
+    windows, _ = predict_windows_with_info(model, record, cfg, device)
+    return windows
 
-    return pair_boundary_events(
-        probabilities[:, 0],
-        probabilities[:, 1],
-        record["starts"],
-        record["ends"],
-        threshold=cfg.threshold,
-        min_segments=cfg.min_sentence_segments,
-        max_segments=cfg.max_sentence_segments,
+
+def cached_boundary_features(
+    video_id: str, cfg: BoundaryConfig, checkpoint: dict,
+) -> dict | None:
+    """Read only matching cached features; never use stale visual encodings."""
+    source = Path(cfg.visual_cache_dir) / f"{video_id}.npz"
+    if not source.is_file():
+        raise FileNotFoundError(f"Visual cache missing: {source}")
+    dest = Path(cfg.feature_dir) / f"{video_id}.npz"
+    return _valid_feature_cache(
+        dest, source, checkpoint["vlp_sha256"], video_id,
+        require_local_streams=cfg.use_multistream,
     )
+
+
+def build_boundary_features_for_inference(
+    video_id: str, cfg: BoundaryConfig, checkpoint_payload: dict,
+    device: torch.device,
+) -> dict:
+    """Requires cached RGB/Pose features; does not access subtitle text."""
+    cached = cached_boundary_features(video_id, cfg, checkpoint_payload)
+    if cached is not None:
+        return cached
+    model, _, sha = load_vlp_model(
+        checkpoint_payload["vlp_checkpoint"], device
+    )
+    if sha != checkpoint_payload["vlp_sha256"]:
+        raise ValueError("VLP visual checkpoint changed since boundary training")
+    return extract_segment_features(
+        video_id, model, cfg.visual_cache_dir, cfg.feature_dir,
+        sha, device, cfg.feature_batch_size,
+        include_local_views=cfg.use_multistream,
+    )
+
+
+def evaluate_boundary_checkpoint(
+    checkpoint: str | Path,
+    ids_file: str | Path,
+    reference_dir: str | Path,
+    *,
+    allow_weak_reference: bool = False,
+    output_file: str | Path | None = None,
+) -> dict:
+    """Run sentence-level metrics on a held-out video split.
+
+    References MUST be independently verified VTT/SRT unless the caller
+    deliberately opts into a weak-label diagnostic. Metrics only reflect the
+    supplied reference intervals, not necessarily semantic sentence accuracy.
+    """
+    from persian_sea.translation.data import load_ids
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    head, cfg, payload = load_boundary_head(checkpoint, dev)
+    ids = load_ids(ids_file)
+    if set(ids) & set(load_ids(cfg.train_ids)):
+        raise ValueError("Evaluation IDs overlap with training IDs")
+    if not allow_weak_reference and Path(reference_dir).resolve() == Path(cfg.subtitles_dir).resolve():
+        raise ValueError("Refusing raw training subtitles as trusted GT; "
+                         "pass --allow-weak-reference for diagnostic only")
+    if not Path(reference_dir).is_dir():
+        raise FileNotFoundError(f"Reference VTT directory missing: {reference_dir}")
+    per_video = []
+    for video_id in ids:
+        reference_path = find_subtitle(Path(reference_dir), video_id)
+        if reference_path is None:
+            raise FileNotFoundError(f"Missing reference VTT for {video_id}")
+        truth = [
+            (float(c.start), float(c.end))
+            for c in read_subtitles(reference_path) if c.text.strip() and c.end > c.start
+        ]
+        record = build_boundary_features_for_inference(video_id, cfg, payload, dev)
+        windows, info = predict_windows_with_info(head, record, cfg, dev)
+        row = sentence_segmentation_metrics(
+            [(w["start"], w["end"]) for w in windows], truth
+        )
+        row["video_id"] = video_id
+        if info is not None:
+            row["scp_predicted_count"] = info.predicted_count
+            row["scp_count_absolute_error"] = abs(info.predicted_count - len(truth))
+            row["count_adjustment"] = info.adjustment_reason
+        per_video.append(row)
+    summary = aggregate_sentence_metrics(per_video)
+    if cfg.use_scp:
+        summary["scp_count_mae"] = float(np.mean([
+            x["scp_count_absolute_error"] for x in per_video
+        ]))
+    report = {
+        "checkpoint": str(checkpoint),
+        "ids_file": str(ids_file),
+        "reference_dir": str(reference_dir),
+        "ground_truth_status": (
+            "USER_ALLOWED_WEAK_REFERENCE_DIAGNOSTIC_ONLY" if allow_weak_reference
+            else "user_supplied_independently_verified_reference_REQUIRED"
+        ),
+        "f1_matching": "greedy_one_to_one_temporal_iou",
+        "ser_definition": "abs(pred_count-reference_count)/max(1,reference_count)",
+        "count_mae_definition": "mean_abs(pred_window_count-reference_count)_per_video",
+        "summary": summary,
+        "videos": per_video,
+    }
+    if output_file:
+        dest = Path(output_file)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return report
