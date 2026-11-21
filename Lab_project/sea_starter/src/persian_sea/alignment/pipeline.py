@@ -1,7 +1,13 @@
 from __future__ import annotations
+
+"""SEA VTT proposal pipeline, supporting optional SignShift visual priors."""
+
 from dataclasses import asdict
 from pathlib import Path
 import json
+import math
+import os
+import numpy as np
 
 from persian_sea.alignment.backends import alignment_backends
 from persian_sea.alignment.dp import DPConfig
@@ -12,7 +18,60 @@ from persian_sea.io.elan import read_sign_segments, write_aligned_subtitle_tier
 from persian_sea.io.subtitles import SubtitleCue, find_subtitle, read_subtitles, shifted, write_vtt
 
 
-def align_one(video_id: str, cfg: AppConfig) -> Path:
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _validate_evidence(
+    evidence: dict, signs: list, video_id: str, *, tolerance_seconds: float = 0.35
+) -> None:
+    n = len(signs)
+    for key in ("start_probs", "end_probs", "starts", "ends"):
+        if key not in evidence:
+            raise ValueError(f"SignShift evidence missing {key} for {video_id}")
+        a = np.asarray(evidence[key], dtype=np.float64)
+        if a.shape != (n,) or not np.isfinite(a).all():
+            raise ValueError(f"SignShift evidence {key} must have {n} finite entries")
+    if np.any(np.abs(np.asarray(evidence["starts"]) - [s.start for s in signs]) > tolerance_seconds) or np.any(
+        np.abs(np.asarray(evidence["ends"]) - [s.end for s in signs]) > tolerance_seconds
+    ):
+        raise ValueError("SignShift and EAF timestamps mismatch; rebuild matching visual cache")
+
+
+def _write_signshift_evidence(video_id: str, evidence: dict, output: Path) -> None:
+    _write_json_atomic(output, {
+        "video_id": video_id,
+        "checkpoint": str(evidence.get("checkpoint", "")),
+        "method": evidence.get("method", "sea_signshift"),
+        "num_sign_segments": len(evidence["starts"]),
+        "count_prediction": evidence.get("count_prediction"),
+        "max_cache_eaf_time_delta_seconds": evidence.get("max_cache_eaf_time_delta_seconds"),
+        "segments": [
+            {"index": int(i), "start": float(s), "end": float(e),
+             "start_probability": float(a), "end_probability": float(b)}
+            for i, (s, e, a, b) in enumerate(zip(
+                evidence["starts"], evidence["ends"],
+                evidence["start_probs"], evidence["end_probs"]
+            ))
+        ],
+        "note": "Probabilities are learned weak-label evidence, not human-verified ground truth.",
+    })
+
+
+def align_one(
+    video_id: str, cfg: AppConfig, signshift_runtime=None, *,
+    backend_override: str | None = None,
+    boundary_weight: float = 1.0,
+) -> Path:
+    """Align one video; extra keyword arguments are optional for legacy callers."""
+    if not math.isfinite(float(boundary_weight)) or boundary_weight < 0:
+        raise ValueError("boundary_weight must be finite and nonnegative")
     subtitle_path = find_subtitle(cfg.paths.subtitles_raw, video_id)
     if subtitle_path is None:
         raise FileNotFoundError(f"Subtitle missing for {video_id}")
@@ -22,42 +81,62 @@ def align_one(video_id: str, cfg: AppConfig) -> Path:
     out = cfg.paths.alignment_output / f"{video_id}.vtt"
     if out.exists() and not cfg.alignment.overwrite:
         return out
-    backend = cfg.alignment.backend
+
+    backend = backend_override or cfg.alignment.backend
+    if backend not in {"original", "sea_temporal", "sea_signshift"}:
+        raise ValueError(f"Unknown alignment backend: {backend}")
     signs = []
-    eaf_directory = (Path(cfg.alignment.sign_eaf_dir)
-                     if cfg.alignment.sign_eaf_dir else segmentation_subdir(cfg))
+    eaf_directory = (
+        Path(cfg.alignment.sign_eaf_dir) if cfg.alignment.sign_eaf_dir
+        else segmentation_subdir(cfg)
+    )
     source_eaf = eaf_directory / f"{video_id}.eaf"
     if backend != "original":
         if not source_eaf.exists():
             raise FileNotFoundError(f"Need SIGN segments: {source_eaf}")
         signs, _ = read_sign_segments(source_eaf, cfg.elan.sign_tiers)
+
     if cfg.alignment.similarity_weight != 0.0:
         raise ValueError(
-            "SEA pipeline does not currently build a semantic similarity matrix. "
-            "Keep alignment.similarity_weight=0 until a sim_matrix provider is connected."
+            "SEA pipeline does not build a semantic similarity matrix; "
+            "keep alignment.similarity_weight=0 or use the semantic alignment pipeline"
         )
+
+    evidence = None
+    kw: dict = {}
+    if backend == "sea_signshift":
+        if signshift_runtime is None:
+            raise ValueError("sea_signshift requires a SignShiftBoundaryRuntime")
+        evidence = signshift_runtime.predict(video_id, signs)
+        _validate_evidence(
+            evidence, signs, video_id,
+            tolerance_seconds=float(getattr(signshift_runtime, "time_tolerance_seconds", 0.35)),
+        )
+        kw.update(boundary_start_probs=evidence["start_probs"],
+                  boundary_end_probs=evidence["end_probs"],
+                  boundary_weight=boundary_weight)
+
     dp_config = DPConfig(
         duration_penalty_weight=cfg.alignment.duration_penalty_weight,
         gap_penalty_weight=cfg.alignment.gap_penalty_weight,
         max_gap_seconds=cfg.alignment.max_gap_seconds,
         candidate_window_size=cfg.alignment.candidate_window_size,
-        # Similarity remains zero until the pipeline supplies a real sim_matrix.
         similarity_weight=cfg.alignment.similarity_weight,
         allow_null_alignment=cfg.alignment.allow_null_alignment,
         null_alignment_penalty=cfg.alignment.null_alignment_penalty,
     )
-    aligner = alignment_backends.create(backend, dp_config=dp_config)
+    aligner = alignment_backends.create(backend, dp_config=dp_config, **kw)
     shifted_inputs = shifted(
         originals, cfg.alignment.pre_shift_start_seconds,
-        cfg.alignment.pre_shift_end_seconds)
+        cfg.alignment.pre_shift_end_seconds,
+    )
     proposals = aligner.propose(shifted_inputs, signs)
-
     proposals = [AlignmentProposal(
-        p.cue_index, TimeSpan(
-            max(0., p.span.start + cfg.alignment.post_shift_start_seconds),
-            p.span.end + cfg.alignment.post_shift_end_seconds,
-        ), p.method, p.score)
-        for p in proposals]
+        p.cue_index,
+        TimeSpan(max(0.0, p.span.start + cfg.alignment.post_shift_start_seconds),
+                 p.span.end + cfg.alignment.post_shift_end_seconds),
+        p.method, p.score,
+    ) for p in proposals]
 
     applied, decisions = reconcile(originals, proposals, QualityGateConfig(
         max_boundary_shift_seconds=cfg.alignment.max_boundary_shift_seconds,
@@ -66,25 +145,35 @@ def align_one(video_id: str, cfg: AppConfig) -> Path:
     by_index = {p.cue_index: p for p in proposals}
     proposed_cues = [
         SubtitleCue(by_index[i].span.start, by_index[i].span.end, cue.text)
-        if i in by_index else cue
-        for i, cue in enumerate(originals)
+        if i in by_index else cue for i, cue in enumerate(originals)
     ]
     out.parent.mkdir(parents=True, exist_ok=True)
     proposal_file = out.with_name(f"{video_id}.proposed.vtt")
     write_vtt(proposed_cues, proposal_file)
     write_vtt(applied, out)
+
+    evidence_path = None
+    if evidence is not None:
+        evidence_path = out.with_name(f"{video_id}.signshift.json")
+        _write_signshift_evidence(video_id, evidence, evidence_path)
+
     report_file = out.with_name(f"{video_id}.review.json")
-    report_file.write_text(json.dumps({
-        "video_id": video_id, "method": backend,
-        "warning": "method scores are NOT calibrated probabilities / verified GT",
+    _write_json_atomic(report_file, {
+        "video_id": video_id,
+        "method": backend,
+        "warning": "Scores are not calibrated probabilities or verified human ground truth",
         "null_alignment_enabled": cfg.alignment.allow_null_alignment,
         "null_alignment_penalty": cfg.alignment.null_alignment_penalty,
-        "candidate_vtt": str(proposal_file), "applied_vtt": str(out),
+        "candidate_vtt": str(proposal_file),
+        "applied_vtt": str(out),
+        "signshift_evidence": str(evidence_path) if evidence_path else None,
+        "signshift_boundary_weight": boundary_weight if evidence is not None else None,
+        "signshift_count_prediction": evidence.get("count_prediction") if evidence else None,
         "decisions": [asdict(d) for d in decisions],
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    })
     if cfg.alignment.write_updated_eaf and source_eaf.exists():
-        target_eaf = cfg.paths.alignment_output / f"{video_id}.predicted.eaf"
-        write_aligned_subtitle_tier(source_eaf, applied, target_eaf,
+        target = cfg.paths.alignment_output / f"{video_id}.predicted.eaf"
+        write_aligned_subtitle_tier(source_eaf, applied, target,
                                     tier_id=cfg.elan.aligned_subtitle_tier)
     print(f"[align] {video_id}: {len(originals)} cues, {len(signs)} signs, "
           f"backend={backend}, proposals={proposal_file}, review={report_file}")

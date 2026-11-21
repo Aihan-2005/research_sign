@@ -1,5 +1,6 @@
-
 from __future__ import annotations
+
+"""Fail-closed readiness checks for weakly supervised translation training."""
 
 from pathlib import Path
 import json
@@ -21,21 +22,29 @@ def readiness_report(cfg: TranslationConfig, *, require_all: bool = True) -> dic
         counts = check_disjoint_splits(cfg.train_ids, cfg.val_ids, cfg.test_ids)
         result["splits"] = counts
         if counts["train"] < 2:
-            errors.append("Need at least two independent TRAIN videos for VLP warm-up")
-        if counts["val"] < 1 or counts["test"] < 1:
-            errors.append("Need separate validation and test recordings")
+            errors.append("Training needs at least two distinct videos")
+        if counts["val"] < 2:
+            errors.append("Validation must have >=2 distinct videos (also needed for VLP retrieval)")
+        if counts["test"] < 1:
+            errors.append("Test must be a separate nonempty set of videos")
         if cfg.signer_metadata:
             from persian_sea.video_text.split_audit import audit_signer_splits
             result["signer_audit"] = audit_signer_splits(
                 cfg.signer_metadata, cfg.train_ids, cfg.val_ids, cfg.test_ids,
-                strict_signer=cfg.strict_signer)
+                strict_signer=cfg.strict_signer,
+            )
             if result["signer_audit"].get("signers_across_splits"):
-                result["warnings"].append("Signers appear across multiple splits; signer-independent quality may be optimistic")
+                result["warnings"].append(
+                    "Signers overlap across splits; signer-independent generalization is not established"
+                )
             if result["signer_audit"].get("unknown_metadata"):
                 result["warnings"].append("Signer/session metadata incomplete")
         else:
+            if cfg.strict_signer:
+                errors.append("strict_signer=True requires signer_metadata CSV")
             result["warnings"].append(
-                "No signer/source_recording_id metadata: cannot verify signer/session leakage")
+                "No signer/source recording metadata: source/signer leakage cannot be audited"
+            )
     except (OSError, ValueError, KeyError) as exc:
         errors.append(f"Split/metadata audit: {exc}")
         return result
@@ -50,26 +59,34 @@ def readiness_report(cfg: TranslationConfig, *, require_all: bool = True) -> dic
             sub = find_subtitle(Path(cfg.subtitles_dir), vid)
             path = Path(cfg.visual_cache_dir) / f"{vid}.npz"
             if sub is None or not path.is_file():
-                errors.append(f"{split}/{vid}: missing VTT or Visual NPZ: {sub}, {path}")
+                errors.append(f"{split}/{vid}: missing VTT or visual NPZ: {sub}, {path}")
                 continue
             try:
                 texts = read_subtitles(sub)
                 if not texts or not any(c.text.strip() for c in texts):
                     raise ValueError("empty text cues")
 
+                # IMPORTANT: propagate require_alignment_review here as well as
+                # in the Dataset, so 'check' cannot falsely pass unsafe pairs.
                 load_alignment_cues(vid, texts, AlignmentSourceSettings(
-                    mode=cfg.pair_source, approved_dir=cfg.approved_subtitles_dir,
-                    sea_dir=cfg.sea_alignment_dir, semantic_dir=cfg.semantic_alignment_dir,
-                    max_shift_seconds=cfg.max_alignment_shift_seconds))
-                with np.load(path, allow_pickle=False) as f:
-
-                    d = {k: f[k] for k in ("pose", "rgb", "starts", "ends")}
-                validate_cache(d, path)
-                signature = (tuple(d["pose"].shape[1:]), tuple(d["rgb"].shape[1:]))
+                    mode=cfg.pair_source,
+                    approved_dir=cfg.approved_subtitles_dir,
+                    sea_dir=cfg.sea_alignment_dir,
+                    semantic_dir=cfg.semantic_alignment_dir,
+                    max_shift_seconds=cfg.max_alignment_shift_seconds,
+                    require_alignment_review=cfg.require_alignment_review,
+                ))
+                with np.load(path, allow_pickle=False) as archive:
+                    values = {k: archive[k] for k in ("pose", "rgb", "starts", "ends")}
+                validate_cache(values, path)
+                signature = (tuple(values["pose"].shape[1:]),
+                             tuple(values["rgb"].shape[1:]))
                 if feature_signature is None:
                     feature_signature = signature
                 elif signature != feature_signature:
-                    raise ValueError(f"Visual dimensions changed across videos: {signature} != {feature_signature}")
+                    raise ValueError(
+                        f"Visual dimensions differ between videos: {signature} vs {feature_signature}"
+                    )
                 videos += 1
                 cues += sum(bool(c.text.strip()) for c in texts)
             except (ValueError, OSError, KeyError) as exc:
@@ -83,7 +100,7 @@ def readiness_report(cfg: TranslationConfig, *, require_all: bool = True) -> dic
         if require_all:
             errors.append(f"VLP checkpoint missing: {cfg.visual_checkpoint}")
         else:
-            result["warnings"].append("VLP checkpoint not available yet: translation training blocked")
+            result["warnings"].append("VLP checkpoint is not available; training blocked")
     result["ok"] = not errors
     return result
 

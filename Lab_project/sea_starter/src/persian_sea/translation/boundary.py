@@ -369,23 +369,26 @@ def make_boundary_targets(
     ):
         raise ValueError("Invalid segment times for boundary targets")
 
-    centers = (starts + ends) / 2.0
     labels = np.zeros((len(starts), 2), dtype=np.float32)
     valid_cues = 0
-    video_start, video_end = float(starts[0]), float(ends[-1])
+    video_start, video_end = float(starts[0]), float(np.max(ends))
     for cue in cues:
         if not getattr(cue, "text", "").strip() or cue.end <= cue.start:
             continue
-        if cue.end < video_start or cue.start > video_end:
+        if cue.end <= video_start or cue.start >= video_end:
             continue
         cue_start = float(np.clip(cue.start, video_start, video_end))
         cue_end = float(np.clip(cue.end, video_start, video_end))
-        if cue_end < cue_start:
+        if cue_end <= cue_start:
             continue
-        start_index = int(np.argmin(np.abs(centers - cue_start)))
-        end_index = int(np.argmin(np.abs(centers - cue_end)))
-        if end_index < start_index:
+        # Do not assign a nearby but non-overlapping sign to a subtitle.
+        # Those false labels amplify weak-VTT timing errors during training.
+        overlap = np.maximum(0.0, np.minimum(ends, cue_end) - np.maximum(starts, cue_start))
+        valid_sign_indices = np.flatnonzero(overlap > 1e-6)
+        if len(valid_sign_indices) == 0:
             continue
+        start_index = int(valid_sign_indices[0])
+        end_index = int(valid_sign_indices[-1])
         labels[start_index, 0] = 1.0
         labels[end_index, 1] = 1.0
         valid_cues += 1

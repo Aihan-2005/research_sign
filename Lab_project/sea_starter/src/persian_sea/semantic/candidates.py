@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""Temporal candidate selection robust to overlapping E4s sign segments.
+
+Start timestamps must be sorted, but midpoints may not be: a very long
+segment can overlap later short segments. Never binary-search unsorted mids.
+"""
+
 from dataclasses import dataclass
 import numpy as np
 
@@ -9,16 +15,15 @@ def select_candidate_indices(
     rough_start: float, rough_end: float, radius: float,
     min_candidates: int, max_candidates: int,
 ) -> np.ndarray:
-
-
-
     starts = np.asarray(starts, dtype=np.float64)
     ends = np.asarray(ends, dtype=np.float64)
     if starts.ndim != 1 or ends.ndim != 1 or len(starts) != len(ends) or not len(starts):
         raise ValueError("Invalid segment timestamp arrays")
-    if not np.all(np.diff(starts) >= 0) or np.any(ends <= starts):
-        raise ValueError("Segments must be sorted and have positive duration")
-    if not (0 <= rough_start < rough_end) or radius < 0:
+    if (not np.isfinite(starts).all() or not np.isfinite(ends).all()
+            or np.any(np.diff(starts) < 0) or np.any(ends <= starts)):
+        raise ValueError("Segments must be finite, start-sorted and have positive duration")
+    if (not np.isfinite([rough_start, rough_end, radius]).all()
+            or not (0 <= rough_start < rough_end) or radius < 0):
         raise ValueError("Invalid weak subtitle interval or search radius")
     if not (1 <= min_candidates <= max_candidates):
         raise ValueError("Need 1 <= min_candidates <= max_candidates")
@@ -26,20 +31,26 @@ def select_candidate_indices(
     mids = (starts + ends) / 2.0
     cue_mid = (rough_start + rough_end) * 0.5
     lo_time, hi_time = rough_start - radius, rough_end + radius
-    lo = int(np.searchsorted(mids, lo_time, side="left"))
-    hi = int(np.searchsorted(mids, hi_time, side="right"))
-    lo = max(0, min(lo, len(mids) - 1))
-    hi = max(lo + 1, min(hi, len(mids)))
 
+    # Original version used np.searchsorted(mids), which assumes that mids is
+    # sorted. That is not guaranteed when E4s produces overlapping intervals.
+    selected = np.flatnonzero((mids >= lo_time) & (mids <= hi_time))
+    if selected.size:
+        lo, hi = int(selected.min()), int(selected.max()) + 1
+    else:
+        center = int(np.argmin(np.abs(mids - cue_mid)))
+        lo, hi = center, center + 1
+
+    n = len(mids)
     if hi - lo < min_candidates:
         center = int(np.argmin(np.abs(mids - cue_mid)))
         lo = max(0, center - min_candidates // 2)
-        hi = min(len(mids), lo + min_candidates)
+        hi = min(n, lo + min_candidates)
         lo = max(0, hi - min_candidates)
     if hi - lo > max_candidates:
         center = int(np.argmin(np.abs(mids[lo:hi] - cue_mid))) + lo
         lo = max(0, center - max_candidates // 2)
-        hi = min(len(mids), lo + max_candidates)
+        hi = min(n, lo + max_candidates)
         lo = max(0, hi - max_candidates)
     return np.arange(lo, hi, dtype=np.int64)
 
@@ -47,7 +58,7 @@ def select_candidate_indices(
 @dataclass(frozen=True)
 class CandidateSpan:
     start_index: int
-    end_index: int  
+    end_index: int  # exclusive
     start_time: float
     end_time: float
 
@@ -70,13 +81,16 @@ def enumerate_candidate_spans(
         raise ValueError("Invalid span limits")
     spans = []
     for a in range(len(starts)):
+        start = float(starts[a])
+        max_end = start
         for b in range(a + 1, min(len(starts), a + max_span_segments) + 1):
-            start, end = float(starts[a]), float(ends[b - 1])
-            if end <= start:
+            # An earlier E4s segment may extend beyond the next one's end.
+            max_end = max(max_end, float(ends[b - 1]))
+            if max_end <= start:
                 continue
-            if end - start > max_span_seconds:
+            if max_end - start > max_span_seconds:
                 break
-            spans.append(CandidateSpan(a, b, start, end))
+            spans.append(CandidateSpan(a, b, start, max_end))
     return spans
 
 

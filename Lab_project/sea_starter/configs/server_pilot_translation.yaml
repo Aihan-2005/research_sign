@@ -1,0 +1,56 @@
+
+
+visual_config: configs/server_pilot_vlp.yaml
+visual_checkpoint: outputs/video_text/server_pilot/best_video_text.pt
+require_pretrained_visual: true
+model_name: google/mt5-small
+train_ids: data/server_splits/train_ids.txt
+val_ids: data/server_splits/val_ids.txt
+test_ids: data/server_splits/test_ids.txt
+subtitles_dir: data/subtitles_raw
+
+pair_source: raw
+approved_subtitles_dir: data/subtitles_approved
+sea_alignment_dir: outputs/aligned_subtitles/sea_semantic_vlp
+semantic_alignment_dir: outputs/aligned_subtitles/semantic
+max_alignment_shift_seconds: 0.0
+require_alignment_review: false
+subtitle_to_sign_offset_seconds: 0.0
+subtitle_offsets_by_video: {}
+
+visual_cache_dir: outputs/features
+output_dir: outputs/translation/server_pilot_baseline
+
+signer_metadata: ""
+strict_signer: false
+
+max_candidate_segments: 48
+min_candidate_segments: 4
+cue_margin_seconds: 2.0
+max_source_segments: 32
+max_target_tokens: 96
+
+inference_stride_segments: 32
+batch_size: 1
+accumulation_steps: 4
+epochs: 2
+max_train_steps: 25
+learning_rate: 0.00003
+weight_decay: 0.01
+freeze_visual: true
+amp: false
+seed: 42
+max_generate_tokens: 96
+
+ota_enabled: false
+ota_weight: 0.10
+ota_epsilon: 0.07
+ota_iterations: 30
+ota_dustbin_cost: 0.60
+ota_temporal_weight: 0.01
+ota_detach_text: false
+
+tpa_enabled: false
+tpa_weight: 0.05
+tpa_temperature: 1.0
+tpa_confidence_power: 1.0
